@@ -5,6 +5,8 @@
 #include <string_view>
 #include <cassert>
 
+#define MIN(a, b) ((a < b) ? (a) : (b))
+
 source_t::source_t(std::string_view view, const std::string &name) : filename(name) {
   start = new char[view.size()];
   std::memcpy((void *) start, view.data(), view.size());
@@ -37,10 +39,10 @@ bool source_t::eof() const {
 }
 
 char source_t::next() {
-  if (eof()) throw warn(*this, "End of file reached");
+  if (eof()) return '\0';
   char c = *pointer++;
   if (c == '\n') {
-    column_ = -1;
+    column_ = 0;
     line_++;
   } else {
     column_++;
@@ -48,26 +50,33 @@ char source_t::next() {
   return c;
 }
 
-std::string_view source_t::string(const source_location_t &location) const {
+char source_t::peek(int64_t offset) const {
+  const char *pos = pointer + offset;
+  assert(pos >= start && pos <= end);
+
+  return *pos;
+}
+
+std::string source_t::string(const source_location_t &location) const {
   int64_t start = find_line(location.start.line);
   int64_t end = location.end.line == location.start.line ? start : find_line(location.end.line);
 
   const char *line_start = this->start + start + location.start.column,
     *line_end = this->start + end + location.end.column;
 
-  assert(line_start > this->start && line_start <= this->end);
-  assert(line_end > this->start && line_end <= this->end);
-  return std::string_view(line_start, line_end);
+  assert(line_start >= this->start && line_start <= this->end);
+  assert(line_end >= this->start && line_end <= this->end);
+  return std::string(line_start, line_end);
 }
 
-std::string_view source_t::string(int64_t start, int64_t end) const {
+std::string source_t::string(int64_t start, int64_t end) const {
   const char *s = this->start + start;
   const char *e = this->start + end;
 
   assert(s >= this->start && s <= this->end);
   assert(e >= this->start && e <= this->end);
 
-  return std::string_view(s, e);
+  return std::string(s, e);
 }
 
 std::string_view source_t::line(int64_t line) const {
@@ -102,7 +111,7 @@ void
 source_t::push() {
   states.push_back(state_t {
       .column = column_, .line = line_,
-      .offset = (end - start)
+      .offset = (pointer - start)
     });
 }
 

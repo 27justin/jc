@@ -6,126 +6,183 @@
 #include <optional>
 
 #include "frontend/token.hpp"
-#include "frontend/symbol.hpp"
-#include "frontend/scope.hpp"
 
-struct node_t {
-  source_range_t location;
-  virtual ~node_t() = default;
-};
+template<typename T>
+using SP = std::shared_ptr<T>;
 
-// Represents a literal value (e.g., 5, "hello")
-struct literal_expr_t : public node_t {};
-
+struct ast_type_t;
+struct declaration_t;
+struct binop_expr_t;
+struct unary_expr_t;
+struct symbol_expr_t;
 struct struct_decl_t;
+struct block_node_t;
+struct function_decl_t;
+struct function_impl_t;
+struct extern_decl_t;
+struct return_stmt_t;
+struct call_expr_t;
+struct literal_expr_t;
+struct addr_of_expr_t;
+struct self_decl_t;
+struct function_parameter_t;
+struct if_stmt_t;
+struct type_alias_decl_t;
+struct cast_expr_t;
 
-struct program_node_t : public node_t {
-  std::vector<std::unique_ptr<node_t>> declarations;
-  std::vector<std::unique_ptr<struct_decl_t>> structs;
-  std::vector<std::unique_ptr<node_t>> externs;
+struct member_access_expr_t;
+
+enum class literal_type_t {eString, eInteger, eFloat, eBool};
+
+struct ast_node_t {
+  // TODO: We leak memory with our union, delete those pointers
+  ~ast_node_t() = default;
+
+  enum { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast } type;
+  struct {
+    union {
+      ast_type_t *type;
+      declaration_t *declaration;
+      binop_expr_t *binop;
+      unary_expr_t *unary;
+      symbol_expr_t *symbol;
+      struct_decl_t *struct_decl;
+      block_node_t *block;
+      function_decl_t *fn_decl;
+      function_impl_t *fn_impl;
+      function_parameter_t *fn_param;
+      extern_decl_t *extern_decl;
+      return_stmt_t *return_stmt;
+      call_expr_t *call_expr;
+      literal_expr_t *literal_expr;
+      member_access_expr_t *member_access;
+      addr_of_expr_t *addr_of;
+      if_stmt_t *if_stmt;
+      type_alias_decl_t *alias_decl;
+      cast_expr_t *cast;
+    };
+  } as;
+  source_location_t location;
 };
 
-struct string_literal_t : public literal_expr_t {
+struct ast_type_t {
+  // !u8
+  // SP<ast_node_t> name; //< lookup_t(u8)
+  std::string name; //< u8
+  bool is_pointer, is_nullable; //< is_pointer = !|?, is_nullable = ?
+};
+
+struct declaration_t {
+  // let x: i32 = 1;
+  // x: i32;
+  std::string identifier; //< x
+  SP<ast_node_t> type; //< i32
+  SP<ast_node_t> value; //< 1
+  bool is_mutable; //< let/var, default = false
+};
+
+struct binop_expr_t {
+  // 1 + 2
+  token_type_t op; //< +
+  SP<ast_node_t> left, right; //< 1, 2
+};
+
+struct unary_expr_t {
+  // !true
+  token_type_t op; //< !
+  SP<ast_node_t> value; //< true
+};
+
+struct symbol_expr_t {
+  // printf("...", variable)
+  // std.io.print("...")
+
+  std::string identifier; //< print/variable
+  SP<ast_node_t> scope; //< std.io
+};
+
+struct struct_decl_t {
+  // struct name { name: !u8; age: i32; };
+  std::string name;
+  std::vector<SP<ast_node_t>> members;
+};
+
+struct block_node_t {
+  std::vector<SP<ast_node_t>> body;
+};
+
+struct function_decl_t {
+  // fn <i32> stat(file: !u8, statbuf: !any)
+  std::string name; //< stat
+  SP<ast_node_t> type; //< i32
+  std::vector<SP<ast_node_t>> parameters; //< file: !u8, statbuf: !any
+  bool is_var_args = false;
+};
+
+struct function_impl_t {
+  SP<ast_node_t> declaration;
+  SP<ast_node_t> block;
+};
+
+struct extern_decl_t {
+  // extern "C" fn <i32> stat(file: !u8, statbuf: !any)
+  std::string convention; //< C
+  SP<ast_node_t> import;
+};
+
+struct return_stmt_t {
+  SP<ast_node_t> value;
+};
+
+struct call_expr_t {
+  SP<ast_node_t> callee;
+  std::vector<SP<ast_node_t>> arguments;
+  SP<ast_node_t> implicit_receiver;
+};
+
+struct literal_expr_t {
   std::string value;
+  literal_type_t type;
 };
 
-struct integer_literal_t : public literal_expr_t {
-  std::string value;
+struct member_access_expr_t {
+  SP<ast_node_t> object;
+  std::string member;
 };
 
-struct bool_literal_t : public literal_expr_t {
-  bool value;
+struct addr_of_expr_t {
+  SP<ast_node_t> value;
 };
 
-struct float_literal_t : public literal_expr_t {
-  std::string value;
+struct self_decl_t {
+  bool is_pointer;
+  bool is_mutable;
+  SP<ast_node_t> specifier;
 };
 
-struct identifier_expr_t : public node_t {
+struct function_parameter_t {
   std::string name;
-  identifier_expr_t(std::string name) : name(name) {}
-  identifier_expr_t() {}
+  SP<ast_node_t> type;
+  bool is_const = true;
+  bool is_self = false;
+  bool is_self_ref = false;
 };
 
-struct member_access_expr_t : public node_t {
-  std::unique_ptr<node_t> object;
-  std::string member_name;
+struct if_stmt_t {
+  SP<ast_node_t> condition,
+    pass,
+    reject;
 };
 
-// Represents a function call: printf("hi")
-struct call_expr_t : public node_t {
-  std::unique_ptr<node_t> callee;
-  std::vector<std::unique_ptr<node_t>> arguments;
+struct type_alias_decl_t {
+  std::string alias;
+  SP<ast_node_t> type;
+  bool is_distinct;
 };
 
-// Represents a return statement: return 0;
-struct return_stmt_t : public node_t {
-    std::unique_ptr<node_t> expression;
-
-    return_stmt_t(std::unique_ptr<node_t> expr) : expression(std::move(expr)) {}
+struct cast_expr_t {
+  SP<ast_node_t> value;
+  SP<ast_node_t> type;
 };
 
-struct block_t : public node_t {
-  std::vector<std::unique_ptr<node_t>> statements;
-
-  std::shared_ptr<scope_t> scope;
-};
-
-struct type_stmt_t : public node_t {
-  std::string name;
-  std::vector<std::string> refinements;
-  bool is_pointer = false,
-    is_nullable = false,
-    is_array;
-  size_t array_len = 0;
-
-  type_stmt_t() = default;
-  type_stmt_t(std::string type) : name(type) {}
-};
-
-struct var_decl_t : public node_t {
-  std::unique_ptr<type_stmt_t> type; // "i32", "f64", or "auto"
-  std::string identifier;
-  std::optional<std::unique_ptr<node_t>> initial_value;
-};
-
-struct struct_decl_t : public node_t {
-  std::string name;
-  std::vector<std::unique_ptr<var_decl_t>> members;
-
-  std::unique_ptr<struct_type_t> layout;
-};
-
-struct binary_expr_t : public node_t {
-  token_type_t op;
-  std::unique_ptr<node_t> left;
-  std::unique_ptr<node_t> right;
-};
-
-struct unary_expr_t : public node_t {
-  token_type_t op;
-  std::unique_ptr<node_t> target;
-
-  unary_expr_t(token_type_t op, std::unique_ptr<node_t> t)
-    : op(op), target(std::move(t)) {}
-};
-
-struct function_header_t : public node_t {
-  std::string name;
-  std::unique_ptr<type_stmt_t> return_type;
-  std::vector<std::unique_ptr<var_decl_t>> arguments;
-};
-
-// Represents the function itself
-struct function_decl_t : public node_t {
-  std::unique_ptr<function_header_t> header;
-  std::unique_ptr<block_t> body; // List of statements
-};
-
-struct extern_decl_t : public node_t {
-  std::string language;
-  std::unique_ptr<node_t> symbol;
-};
-
-void dump_ast(const node_t& node, int indent = 0);
-
+void dump_ast(ast_node_t &, size_t indent = 0);

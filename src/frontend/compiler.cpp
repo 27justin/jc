@@ -3,11 +3,11 @@
 #include <fstream>
 #include <sstream>
 
-
-// #include <frontend/parser.hpp>
-// #include <frontend/analyzer.hpp>
-// #include <frontend/lexer.hpp>
 #include <frontend/source.hpp>
+#include <frontend/lexer.hpp>
+#include <frontend/parser.hpp>
+#include <backend/analyzer.hpp>
+#include <backend/codegen.hpp>
 
 int main(int argc, char **argv) {
   for (auto i = 1; i < argc; ++i) {
@@ -18,28 +18,37 @@ int main(int argc, char **argv) {
       std::string source = raw.str();
 
       source_t src(source, argv[1]);
+      lexer_t lexer(src);
 
-      // lexer_t lexer(src);
-
-      // {
-      //   lexer_t lexer (source.c_str(), source.size());
-      //   token_t token = lexer.next();
-      //   while (token.type != token_type_t::specialEof) {
-      //     std::cout << "Token: '" << lexer.string(token) << "' ("<<(int)token.type<<" " << token.location.start.line << "," << token.location.start.column << ")\n";
-      //     token = lexer.next();
-      //   }
+      // while (!lexer.eof()) {
+      //   token_t t = lexer.next();
+      //   std::cout << "("<<(int)t.type<<"): " << src.string(t.location) << "\n";
       // }
 
-      // lexer_t lexer (source.c_str(), source.size());
-      // lexer.set_name(argv[i]);
+      try {
+        parser_t parser(lexer, src);
+        auto tu = parser.parse();
 
-      // parser_t parser(lexer);
+        for (auto &node : tu.declarations) {
+          dump_ast(*node);
+        }
 
-      // auto unit = parser.parse();
-      // analyzer_t analyzer (lexer);
-      // analyzer.analyze(*unit);
-      // dump_ast(*unit);
+        analyzer_t analyzer(src);
+        auto su = analyzer.analyze(tu);
 
+        codegen_t codegen(std::move(su));
+        codegen.generate();
+        codegen.compile_to_object("a.o");
+
+      } catch (const parse_error_t &err) {
+        for (auto &msg : err.diagnostics.messages) {
+          std::cerr << serialize(msg) << "\n";
+        }
+      } catch (const analyze_error_t &err) {
+        for (auto &msg : err.diagnostics.messages) {
+          std::cerr << serialize(msg) << "\n";
+        }
+      }
     }
   }
 

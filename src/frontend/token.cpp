@@ -9,6 +9,8 @@ const char *to_text(token_type_t ty) {
     return "if";
   case tt::keywordFor:
     return "for";
+  case tt::keywordWhile:
+    return "while";
   case tt::keywordReturn:
     return "return";
   case tt::keywordFn:
@@ -35,6 +37,12 @@ const char *to_text(token_type_t ty) {
     return "let";
   case tt::keywordVar:
     return "var";
+  case tt::keywordSelf:
+    return "self";
+  case tt::keywordElse:
+    return "else";
+  case tt::keywordDistinct:
+    return "distinct";
 
   case tt::literalString:
     return "string literal";
@@ -75,10 +83,14 @@ const char *to_text(token_type_t ty) {
     return "`";
   case tt::operatorPipe:
     return "|";
+  case tt::operatorBooleanOr:
+    return "||";
   case tt::operatorXor:
     return "^";
   case tt::operatorAnd:
     return "&";
+  case tt::operatorBooleanAnd:
+    return "&&";
   case tt::operatorAt:
     return "@";
   case tt::operatorQuestion:
@@ -87,6 +99,10 @@ const char *to_text(token_type_t ty) {
     return "$";
   case tt::operatorTilde:
     return "~";
+  case tt::operatorDot:
+    return ".";
+  case tt::operatorAs:
+    return "->";
 
   case tt::delimiterLParen:
     return "(";
@@ -112,3 +128,102 @@ const char *to_text(token_type_t ty) {
   default: return "<unknown>";
   }
 }
+
+bool is_operator(token_type_t ty) {
+  using T = token_type_t;
+  switch (ty) {
+  case T::operatorPlus:
+  case T::operatorMinus:
+  case T::operatorDivide:
+  case T::operatorMultiply:
+  case T::operatorEqual:
+  case T::operatorEquality:
+  case T::operatorMod:
+  case T::operatorRange:
+  case T::operatorDot:
+  case T::operatorSize:
+  case T::operatorComma:
+  case T::operatorExclamation:
+  case T::operatorNotEqual:
+  case T::operatorColon:
+  case T::operatorLiteral:
+  case T::operatorPipe:
+  case T::operatorBooleanOr:
+  case T::operatorXor:
+  case T::operatorAnd:
+  case T::operatorBooleanAnd:
+  case T::operatorAt:
+  case T::operatorQuestion:
+  case T::operatorDollar:
+  case T::operatorTilde:
+  case T::operatorAs:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool is_keyword(token_type_t ty) {
+  using T = token_type_t;
+  switch (ty) {
+  case T::keywordIf:
+  case T::keywordFor:
+  case T::keywordWhile:
+  case T::keywordReturn:
+  case T::keywordFn:
+  case T::keywordExtend:
+  case T::keywordWith:
+  case T::keywordMixin:
+  case T::keywordIn:
+  case T::keywordAuto:
+  case T::keywordStruct:
+  case T::keywordStatic:
+  case T::keywordType:
+  case T::keywordExtern:
+  case T::keywordLet:
+  case T::keywordVar:
+  case T::keywordSelf:
+  case T::keywordElse:
+  case T::keywordDistinct:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool is_delimiter(token_type_t ty) {
+  using T = token_type_t;
+  switch (ty) {
+  case T::delimiterLParen:
+  case T::delimiterRParen:
+  case T::delimiterLBrace:
+  case T::delimiterRBrace:
+  case T::delimiterLBracket:
+  case T::delimiterRBracket:
+  case T::delimiterSemicolon:
+  case T::delimiterLAngle:
+  case T::delimiterRAngle:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool is_literal(token_type_t ty) {
+  using T = token_type_t;
+  switch (ty) {
+  case T::literalString:
+  case T::literalInt:
+  case T::literalFloat:
+  case T::literalBool:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool is_identifier(token_type_t ty) {
+  using T = token_type_t;
+  return ty == T::identifier;
+}
+

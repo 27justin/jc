@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include <queue>
+#include <vector>
 #include <format>
 #include <optional>
 
@@ -18,25 +18,26 @@ struct diagnostic_t {
     suggestion; // Did you mean ...
 
   const source_t &source;
-  std::optional<source_location_t> origin; //< What triggered the diagnostic
+  source_location_t origin; //< What triggered the diagnostic
 };
 
 struct diagnostic_stack_t {
-  std::queue<diagnostic_t> messages;
+  std::vector<diagnostic_t> messages;
 };
 
-template<typename ...FormatArgs>
-std::string fmt(const std::string_view literal, FormatArgs &&...args) {
-  return std::format(literal, args...);
-}
-
-diagnostic_t warn(const source_t &,
-                  source_location_t,
-                  const std::string &message,
-                  const std::string &detail,
-                  const std::string &suggestion);
+#define fmt(...) std::format(__VA_ARGS__)
 
 diagnostic_t warn(const source_t &source,
+                  source_location_t,
                   const std::string &message,
                   std::string detail = "",
                   std::string suggestion = "");
+
+diagnostic_t error(const source_t &source,
+                   source_location_t,
+                   const std::string &message,
+                   std::string detail = "",
+                   std::string suggestion = "");
+
+
+std::string serialize(const diagnostic_t &);

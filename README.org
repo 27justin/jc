@@ -1,108 +1,31 @@
 #+TITLE: JC
 
-A compiled, statically typed programming language.
-
-# Features
-
-+ RAII
-+ Compile time introspection
+Statically compiled programming language.
 
 # Example
 
 #+BEGIN_SRC jc
+  distinct type io_result = i32;
+  type path = !u8;
 
-struct person {
-  std.string  first, last;
-  i64   birthdate;
-};
+  extern "C" fn <void> printf(msg: !u8, ..);
+  extern "C" fn <io_result> stat(_: path, _: !statbuf);
 
-struct rpc {};
-
-extend rpc {
-    init() {};
-  deinit() {};
-
-  new() {};
-  free() {};
-
-  create();
-  destroy();
-
-  void serialize(u8 *buffer, size_t *offset);
-};
-
-fn <i32> main() {
-  printf("JC is C, but slightly worse.\n");
-
-  auto heap = std.mem.heap.init();
-  defer heap.free();
-
-  auto arena = std.mem.arena.init(8192);
-  defer arena.free();
-
-  auto numbers = [#](1, 2, 3, 4, 5);
-  for i in 0..numbers.size() {
-    printf("%d\n", numbers[i]);
+  fn <bool> io_result.ok(self) {
+      return (self -> i32) == 0;
   }
 
-  person me = {
-    .first = "Justin Andreas",
-    .last = "Lacoste",
-    .birth = 1028066400
-  };
+  fn <i32> main () {
+    var stat1: statbuf;
 
-  printf("%s %s was born on %s\n", me.first, me.last, std.time.format(me.birth, "%Y-%m-%d"));
-  return 0;
-}
-
+    let err = stat("jcc", &stat1);
+    if !err.ok() {
+      // Too bad...
+      printf("Failed to open file\n");
+    } else {
+      printf("Yaaayyy, the file exists!\n");
+    }
+    printf("Return Value: %i\n", (err -> i32));
+    return 0;
+  }
 #+END_SRC
-
-* Signatures
-
-Function signature ideas
-
-1. C/C++-like
-   `i32 main(i32 argc, u8 **argv)`
-   Anonymous:
-   `i32 () {}`
-
-   Advantages:
-   * Familiar to the most amount of people
-
-   Disadvantages:
-   * Lambdas look weird and visually disambiguating them is difficult
-
-2. Rust-like
-   `fn main(i32 argc, u8 **argv) -> i32`
-   Anonymous
-   `fn () -> i32 {}`
-   With captures:
-   `fn by_value, &by_reference () -> i32 {}
-
-   Advantages:
-   * Clean
-   * Lambdas don't look much different to normal functions
-
-   Disadvantages:
-   * Parsing the return type is more difficult, especially when argument list balloons
-     ```
-     fn (a, b, c, d,
-     e, f, g, h) -> retval
-     ```
-
-* Built-ins
-
-Arrays via
-```
-auto arr = [#](1, 2, 3);
-// expands to
-[i32; 3] arr = [i32; 3](1, 2, 3);
-```
-
-
-```jc
-fn bool: predicate(i32) { ... }
-fn predicate(i32) -> bool { ... }
-fn <bool> predicate() { ... }
-```
-

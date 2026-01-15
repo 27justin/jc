@@ -3,165 +3,172 @@
 #include <iostream>
 #include <string>
 
-void dump_ast(const node_t& node, int indent) {
-  auto print_indent = [&]() {
-    for (int i = 0; i < indent; ++i) std::cout << "  ";
+void dump_ast(ast_node_t &node, size_t indent_val) {
+  auto indent = [indent_val]() {
+    return std::string(indent_val * 2, ' ');
   };
 
-  // Helper to format type paths cleanly
-  auto print_type_path = [](const type_stmt_t& ty) {
-    if (ty.is_pointer) {
-      if (ty.is_nullable) std::cout << "?";
-      else std::cout << "!";
-    }
-    std::cout << ty.name;
-  };
-
-  if (auto root = dynamic_cast<const program_node_t *>(&node)) {
-    std::cout << "Externs:\n";
-    std::cout << "--------\n";
-    for (auto &decl : root->externs) {
-      dump_ast(*decl, indent);
+  std::cout << indent();
+  switch (node.type) {
+  case ast_node_t::eIf: {
+    if_stmt_t *stmt = node.as.if_stmt;
+    std::cout << "[If ";
+    dump_ast(*stmt->condition, 0);
+    std::cout << "\n";
+    dump_ast(*stmt->pass, indent_val + 1);
+    if (stmt->reject) {
       std::cout << "\n";
+      dump_ast(*stmt->reject, indent_val + 1);
     }
-
-    std::cout << "\nStructs:\n";
-    std::cout << "--------\n";
-    for (auto &decl : root->structs) {
-      dump_ast(*decl, indent);
-      std::cout << "\n";
-    }
-
-    std::cout << "\nProgram:\n";
-    std::cout << "--------\n";
-    for (auto &decl : root->declarations) {
-      dump_ast(*decl, indent);
-      std::cout << "\n";
-    }
+    return;
   }
-  else if (auto lit = dynamic_cast<const literal_expr_t*>(&node)) {
-    print_indent();
-    if (auto str = dynamic_cast<const string_literal_t*>(lit)) std::cout << "[String \"" << str->value << "\"]";
-    else if (auto i = dynamic_cast<const integer_literal_t*>(lit)) std::cout << "[Int " << i->value << "]";
-    else if (auto f = dynamic_cast<const float_literal_t*>(lit)) std::cout << "[Float " << f->value << "]";
-    else if (auto b = dynamic_cast<const bool_literal_t*>(lit)) std::cout << "[Bool " << (b->value ? "true" : "false") << "]";
-  }
-  else if (auto ident = dynamic_cast<const identifier_expr_t *>(&node)) {
-    print_indent();
-    std::cout << "[Variable " << ident->name << "]";
-  }
-  else if (auto acc = dynamic_cast<const member_access_expr_t*>(&node)) {
-    print_indent();
-    std::cout << "[MemberAccess ." << acc->member_name << " ";
-    // We pass 0 for indent here to keep it on the same line
-    dump_ast(*acc->object, 0);
+  case ast_node_t::eAddrOf: {
+    addr_of_expr_t *addr = node.as.addr_of;
+    std::cout << "[Address ";
+    dump_ast(*addr->value, 0);
     std::cout << "]";
+    return;
   }
-  else if (auto var = dynamic_cast<const var_decl_t*>(&node)) {
-    print_indent();
-    std::cout << "[VarDecl " << var->identifier << " (Type: ";
-    print_type_path(*var->type);
-    std::cout << ")";
-
-    if (var->initial_value) {
-      std::cout << " (Default: ";
-      dump_ast(**var->initial_value, 0);
-      std::cout<<")";
-    }
-
-    std::cout << "]";
+  case ast_node_t::eMemberAccess: {
+    member_access_expr_t *expr = node.as.member_access;
+    std::cout << "[MemberAccess "; dump_ast(*expr->object, 0); std::cout <<"."<< expr->member <<"]";
+    return;
   }
-  else if (auto call = dynamic_cast<const call_expr_t*>(&node)) {
-    print_indent();
-    std::cout << "[Call ";
-    // Dump callee on same line
-    dump_ast(*call->callee, 0); 
-    if (!call->arguments.empty()) {
-      std::cout << "\n";
-      print_indent();
-      std::cout << "  Args:";
-      for (const auto& arg : call->arguments) {
-        std::cout << "\n";
-        dump_ast(*arg, indent + 2);
-      }
-    }
-    std::cout << "]";
-  }
-  else if (auto ret = dynamic_cast<const return_stmt_t*>(&node)) {
-    print_indent();
+  case ast_node_t::eReturn: {
+    return_stmt_t &ret = *node.as.return_stmt;
     std::cout << "[Return ";
-    if (ret->expression) dump_ast(*ret->expression, 0);
-    std::cout << "]";
+    dump_ast(*ret.value);
+    std::cout << "]\n";
+    return;
+  };
+  case ast_node_t::eCall: {
+    call_expr_t &call = *node.as.call_expr;
+
+    std::cout << "[Call ";
+    dump_ast(*call.callee);
+    std::cout << " with (";
+
+    for (auto &v : call.arguments) {
+      dump_ast(*v);
+      std::cout << " ";
+    }
+
+    std::cout << ")]";
+    return;
   }
-  else if (auto block = dynamic_cast<const block_t*>(&node)) {
-    print_indent();
+  case ast_node_t::eUnary: {
+    unary_expr_t &expr = *node.as.unary;
+    std::cout << "[Unary " << to_text(expr.op);
+    dump_ast(*expr.value);
+    std::cout << "]";
+    return;
+  }
+  case ast_node_t::eBinop: {
+    binop_expr_t &expr = *node.as.binop;
+    std::cout << "[Binary Operation " << to_text(expr.op) << "\n";
+    dump_ast(*expr.left, indent_val + 1);
+    std::cout << "\n";
+    dump_ast(*expr.right, indent_val + 1);
+    std::cout << "\n";
+    std::cout << indent() << "]\n";
+    return;
+  }
+  case ast_node_t::eBlock: {
+    block_node_t &block = *node.as.block;
+
     std::cout << "[Block\n";
-    for (const auto& stmt : block->statements) {
-      dump_ast(*stmt, indent + 1);
-      std::cout << "\n";
+    for (auto &v : block.body) {
+      dump_ast(*v, indent_val + 1);
     }
-    print_indent();
     std::cout << "]";
-  } else if (auto func = dynamic_cast<const function_header_t *>(&node)) {
-    print_indent();
-    std::cout << "[Function " << func->name << " (Returns: ";
-    print_type_path(*func->return_type);
-    std::cout <<  ")\n";
-
-    print_indent();
-    std::cout << "  Params:";
-    for (const auto& arg : func->arguments) {
-      std::cout << "\n";
-      dump_ast(*arg, indent + 2);
-    }
-    std::cout << "\n]";
+    return;
   }
-  else if (auto func = dynamic_cast<const function_decl_t*>(&node)) {
-    print_indent();
-    std::cout << "[Function " << func->header->name << " (Returns: ";
-    print_type_path(*func->header->return_type);
-    std::cout <<  ")\n";
+  case ast_node_t::eLiteral: {
+    literal_expr_t &lit = *node.as.literal_expr;
+    std::cout << "[Literal <";
+    switch (lit.type) {
+    case literal_type_t::eBool:
+      std::cout << "bool";
+      break;
+    case literal_type_t::eInteger:
+      std::cout << "int?";
+      break;
+    case literal_type_t::eFloat:
+      std::cout << "f32";
+      break;
+    case literal_type_t::eString:
+      std::cout << "!u8";
+      break;
+    }
+    std::cout << "> \"" << lit.value << "\"]";
+    return;
+  }
+  case ast_node_t::eExtern: {
+    auto &decl = *node.as.extern_decl;
+    std::cout << "[Extern " << decl.convention << "\n";
+    dump_ast(*decl.import, indent_val + 1);
+    std::cout << indent() << "]\n";
+    return;
+  }
+  case ast_node_t::eSymbol: {
+    symbol_expr_t &lookup = *node.as.symbol;
+    // Type or variable
+    std::cout << "[Symbol " << lookup.identifier << "]";
+    return;
+  }
+  case ast_node_t::eDeclaration: {
+    declaration_t &decl = *node.as.declaration;
 
-    print_indent();
-    std::cout << "  Params:";
-    for (const auto& arg : func->header->arguments) {
-      std::cout << "\n";
-      dump_ast(*arg, indent + 2);
+    std::cout << "[Declare ";
+    std::cout << decl.identifier;
+    std::cout << " <";
+    if (decl.is_mutable) {
+      std::cout << "var ";
+    }
+    if (decl.type)
+      dump_ast(*decl.type);
+    else
+      std::cout << "infer";
+    std::cout << ">";
+
+    if (decl.value) {
+      std::cout << " "; dump_ast(*decl.value);
     }
     std::cout << "\n";
-    if (func->body) dump_ast(*func->body, indent + 1);
-    std::cout << "]";
+    return;
   }
-  else if (auto bin = dynamic_cast<const binary_expr_t*>(&node)) {
-    print_indent();
-    std::cout << "[Binary " << to_text(bin->op) << "\n";
+  case ast_node_t::eType: {
+    ast_type_t &ty = *node.as.type;
 
-    // Dump Left Side
-    if (bin->left) dump_ast(*bin->left, indent + 1);
-    std::cout << "\n";
+    if (ty.is_pointer && ty.is_nullable)
+      std::cout << '?';
+    else if (ty.is_pointer)
+      std::cout << '!';
+    std::cout << ty.name;
+    return;
+  }
+  case ast_node_t::eFunctionImpl: {
+    auto &impl = *node.as.fn_impl;
+    std::cout << "[Function (Signature: "; dump_ast(*impl.declaration, 0); std::cout <<")\n";
 
-    // Dump Right Side
-    if (bin->right) dump_ast(*bin->right, indent + 1);
+    dump_ast(*impl.block, indent_val + 1);
 
-    std::cout << "]";
-  } else if (auto un = dynamic_cast<const unary_expr_t*>(&node)) {
-    print_indent();
-    std::string op_sym = (un->op == token_type_t::operatorMinus) ? "-" : "!";
-    std::cout << "[Unary " << op_sym << "\n";
-    if (un->target) dump_ast(*un->target, indent + 1);
-    std::cout << "]";
-  } else if (auto ext = dynamic_cast<const extern_decl_t *>(&node)) {
-    print_indent();
-    std::cout << "[Extern [Convention: " << ext->language << "]\n";
-    dump_ast(*ext->symbol, indent + 1);
-    std::cout << "]";
-  } else if (auto decl = dynamic_cast<const struct_decl_t *>(&node)) {
-    print_indent();
-    std::cout << "[Struct "<< decl->name <<"\n";
-    for (auto &var : decl->members) {
-      dump_ast(*var, indent + 1);
-      std::cout << "\n";
+    std::cout << "]\n";
+    return;
+  }
+  case ast_node_t::eFunctionDecl: {
+    auto &decl = *node.as.fn_decl;
+    std::cout << "fn <"; dump_ast(*decl.type); std::cout << "> ";
+    std::cout << decl.name << "(";
+    for (auto i = 0; i < decl.parameters.size(); ++i) {
+      dump_ast(*decl.parameters[i]);
+      if (i < decl.parameters.size() - 1) std::cout << ", ";
     }
-    std::cout << "]";
+    std::cout << ")";
+    return;
+  }
+  default:
+    std::cerr << "<Unhandled dump_ast node type: " << (int)node.type << ">\n";
+    return;
   }
 }

@@ -9,6 +9,7 @@ enum class token_type_t {
 
   keywordIf,
   keywordFor,
+  keywordWhile,
   keywordReturn,
   keywordFn,
   keywordExtend,
@@ -22,6 +23,9 @@ enum class token_type_t {
   keywordExtern,
   keywordLet,
   keywordVar,
+  keywordSelf,
+  keywordElse,
+  keywordDistinct,
 
   literalString,
   literalInt,
@@ -44,13 +48,15 @@ enum class token_type_t {
   operatorColon,
   operatorLiteral,
   operatorPipe,
-  operatorOr,
+  operatorBooleanOr,
   operatorXor,
   operatorAnd,
+  operatorBooleanAnd,
   operatorAt,
   operatorQuestion,
   operatorDollar,
   operatorTilde,
+  operatorAs,
 
   delimiterLParen,
   delimiterRParen,
@@ -73,3 +79,11 @@ struct token_t {
 };
 
 const char *to_text(token_type_t);
+
+bool is_operator(token_type_t);
+bool is_keyword(token_type_t);
+bool is_delimiter(token_type_t);
+bool is_literal(token_type_t);
+bool is_identifier(token_type_t);
+
+

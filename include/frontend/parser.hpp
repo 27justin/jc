@@ -2,39 +2,69 @@
 
 #include <memory>
 
+#include "frontend/diagnostic.hpp"
+#include "frontend/source.hpp"
 #include "frontend/token.hpp"
 #include "frontend/lexer.hpp"
 #include "frontend/ast.hpp"
 
+struct translation_unit_t {
+  const source_t &source;
+  std::vector<SP<ast_node_t>> declarations;
+};
+
+struct parse_error_t {
+  diagnostic_stack_t diagnostics;
+};
+
 class parser_t {
 public:
-  parser_t(lexer_t &lexer) : lexer_(lexer) {}
+  static constexpr const char UNEXPECTED_TOKEN[] = "Unexpected token {}";
+  static constexpr const char UNEXPECTED_TOKEN_DETAIL[] =
+      "Unexpected token `{}`, expected `{}`";
+  static constexpr const char UNEXPECTED_TOKEN_ANY_DETAIL[] = "Unexpected token `{}`, expected any of: {}";
 
-  std::unique_ptr<program_node_t> parse();
+  parser_t(lexer_t &lexer, const source_t &source) : lexer(lexer), source(source), token() {}
+
+  translation_unit_t parse();
+
+  diagnostic_stack_t diagnostics;
 private:
-  lexer_t &lexer_;
-  token_t current_token_;
+  lexer_t &lexer;
+  token_t token;
+  const source_t &source;
 
   void consume();
 
   void expect(token_type_t);
+  void expect_any(std::vector<token_type_t>);
+
   bool maybe(token_type_t);
+
   bool peek(token_type_t);
+  token_type_t peek_any(std::vector<token_type_t>);
 
-  std::unique_ptr<function_header_t> parse_function();
+  // Parsing Functions
+  SP<ast_node_t> parse_primary();
+  SP<ast_node_t> parse_expression(int min_power = 0);
 
-  std::unique_ptr<block_t> parse_block();
-  std::unique_ptr<node_t> parse_statement();
+  SP<ast_node_t> parse_type();
+  SP<ast_node_t> parse_variable_decl();
+  SP<ast_node_t> parse_binding();
 
-  std::unique_ptr<node_t> parse_expression(int min_precendence = 0);
-  std::unique_ptr<node_t> parse_primary();
+  SP<ast_node_t> parse_struct_decl();
+  SP<ast_node_t> parse_extern_decl();
 
-  std::unique_ptr<type_stmt_t> parse_type();
-  std::unique_ptr<var_decl_t> parse_variable_decl();
-  std::unique_ptr<extern_decl_t> parse_extern();
+  SP<ast_node_t> parse_function_header();
+  SP<ast_node_t> parse_function_decl();
+  SP<ast_node_t> parse_block();
+  SP<ast_node_t> parse_statement();
+  SP<ast_node_t> parse_return();
 
-  std::unique_ptr<struct_decl_t> parse_struct();
+  SP<ast_node_t> parse_function_call();
+  SP<ast_node_t> parse_function_binding();
 
-  void parse_call_arguments();
+  SP<ast_node_t> parse_if();
+  SP<ast_node_t> parse_type_alias();
 };
 
