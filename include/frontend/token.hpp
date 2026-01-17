@@ -26,6 +26,7 @@ enum class token_type_t {
   keywordSelf,
   keywordElse,
   keywordDistinct,
+  keywordNil,
 
   literalString,
   literalInt,

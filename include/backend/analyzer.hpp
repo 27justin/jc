@@ -15,7 +15,7 @@
 
 struct semantic_info_t {
   translation_unit_t unit;
-  std::map<SP<ast_node_t>, SP<qualified_type_t>> resolved_types;
+  std::map<SP<ast_node_t>, SP<type_t>> resolved_types;
 };
 
 struct analyze_error_t {
@@ -23,9 +23,9 @@ struct analyze_error_t {
 };
 
 struct call_frame_t {
-  std::vector<SP<qualified_type_t>> expected_params;
+  std::vector<SP<type_t>> expected_params;
   std::vector<SP<ast_node_t>> effective_args;
-  SP<qualified_type_t> return_type;
+  SP<type_t> return_type;
   bool is_var_args;
 };
 
@@ -72,23 +72,38 @@ private:
       "Invalid type";
   static constexpr const char INVALID_TYPE_ASSIGNMENT_DETAIL[] = "Type `{}` has no physical size, therefore can not be used here.";
 
+  static constexpr const char INVALID_ASSIGNMENT[] =
+      "Invalid assignment";
+  static constexpr const char INVALID_ASSIGNMENT_DETAIL[] = "Tried to assign expression of type `{}` to an lvalue of type `{}`";
+
+  static constexpr const char UNKNOWN_MEMBER[] =
+      "Unknown member";
+  static constexpr const char UNKNOWN_MEMBER_DETAIL[] = "Member `{}` is not known on type `{}`";
+
+  static constexpr const char INVALID_DEREF[] =
+      "Invalid dereference";
+  static constexpr const char INVALID_DEREF_DETAIL[] = "Type `{}` is not a pointer, and thus not dereferenceable.";
+
+  static constexpr const char INVALID_CAST[] =
+      "Invalid cast";
+  static constexpr const char INVALID_CAST_DETAIL[] = "Type `{}` cannot be cast into type `{}`.";
 
   source_t &source;
-  std::map<SP<ast_node_t>, SP<qualified_type_t>> resolved_types;
+  std::map<SP<ast_node_t>, SP<type_t>> resolved_types;
   type_registry_t types;
 
   std::vector<SP<scope_t>> scope_stack;
-  std::vector<SP<qualified_type_t>> function_stack;
-  std::vector<SP<qualified_type_t>> type_infer_stack; //< Used to infer types in certain cases.
+  std::vector<SP<type_t>> function_stack;
+  std::vector<SP<type_t>> type_infer_stack; //< Used to infer types in certain cases.
 
   // Push a function to the stack
-  void push_function_frame(SP<qualified_type_t>);
+  void push_function_frame(SP<type_t>);
 
   // Pop a function from the stack
   void pop_function_frame();
 
   // Return the most recent function frame
-  SP<qualified_type_t> get_function_frame();
+  SP<type_t> get_function_frame();
   bool has_function_frame();
 
   // --------------------------------------
@@ -105,33 +120,35 @@ private:
 
   // --------------------------------------
 
-  void push_type(SP<qualified_type_t>);
-  void pop_type();
-  SP<qualified_type_t> get_type();
+  void push_type_infer(SP<type_t>);
+  void pop_type_infer();
+  SP<type_t> get_type_infer();
+  bool has_type_infer();
 
   // --------------------------------------
 
-  // Returns true, if a symbol is mutable
-  bool is_mutable(SP<symbol_t> A);
 
   // Return a type that is the pointer to A
-  SP<qualified_type_t> get_pointer_to(SP<qualified_type_t> A);
+  SP<type_t> get_pointer_to(SP<type_t> A);
 
   // Return a type that is a function pointer to a function returning
   // R with argument types `args`
-  SP<qualified_type_t> get_function_pointer(SP<qualified_type_t> R, std::vector<SP<qualified_type_t>> args);
+  SP<type_t> get_function_pointer(SP<type_t> R, std::vector<SP<type_t>> args);
 
   diagnostic_stack_t diagnostics;
 
   // ----------
   //   Analysis
   // ----------
-  using QT = SP<qualified_type_t>;
+  using QT = SP<type_t>;
   using N = SP<ast_node_t>;
 
-  QT resolve_primitive_binop(token_type_t op, QT L, QT R);
+  QT resolve_primitive_binop(binop_type_t op, QT L, QT R);
 
   bool is_lvalue(SP<ast_node_t>);
+  // Returns true, if a symbol is mutable
+  bool is_mutable(SP<ast_node_t> A);
+
   // Returns true, if type A is trivially coercible into type B
   //
   // Example:
@@ -142,12 +159,21 @@ private:
   // into nullable
   // - is_coercible(?u8, !u8) -> false, a nullable pointer can't be coerced into
   // a non-nullable one
-  bool is_coercible(SP<qualified_type_t> A, SP<qualified_type_t> B);
+  bool is_coercible(SP<type_t> A, SP<type_t> B);
 
   // Returns true, if type A is explicitly castable into type B
   //
-  // Includes simple is_coercible check.
-  bool is_castable(SP<qualified_type_t> A, SP<qualified_type_t> B);
+  // Returns true on any case `is_coercible` would return true, and
+  // additional type checks for opaque types.
+  bool is_castable(SP<type_t> A, SP<type_t> B);
+
+  /// Function to desugar one expression into another.
+  template <typename Data>
+  void desugar(SP<ast_node_t> node, ast_node_t::kind_t new_kind, Data &&data) {
+    node->reset();
+    node->kind = new_kind;
+    node->as.raw = new Data(std::move(data));
+  }
 
   QT analyze_type(N);
   QT analyze_expression(N);
@@ -179,22 +205,38 @@ private:
   QT analyze_if(N);
   QT analyze_type_alias(N);
   QT analyze_cast(N);
+  QT analyze_deref(N);
+  QT analyze_nil(N);
+
+  QT analyze_assignment(N);
+  QT analyze_attribute(N);
 
   std::string join(const std::vector<std::string> &, const std::string &separator);
   std::vector<std::string> split(const std::string &, const std::string &);
   SP<symbol_t> resolve_path(const std::vector<std::string> &path);
   void flatten_member_access(N, std::vector<std::string> &path);
 
-  bool is_path_symbol(N);
+  /// @brief Lower an expression into a more usable form Used to
+  /// e.g. lower the `.` shorthand, or the member function call into a
+  /// fully specified one.
+  SP<ast_node_t> lower(SP<ast_node_t> from, SP<ast_node_t> to);
 
   // --------
   //   Errors
   // --------
 
+  void invalid_operation(SP<ast_node_t>, SP<type_t>, SP<type_t>, binop_type_t);
   void unknown_type_error(SP<ast_node_t>);
-  void type_error(SP<qualified_type_t> expected, SP<qualified_type_t> got, SP<ast_node_t> where);
+  void type_error(SP<type_t> expected, SP<type_t> got, SP<ast_node_t> where);
   void var_error(SP<ast_node_t>);
   void infer_error(SP<ast_node_t>);
-  void invalid_type_error(SP<qualified_type_t>, SP<ast_node_t>);
+  void invalid_type_error(SP<type_t>, SP<ast_node_t>);
+  void invalid_assignment(SP<type_t>, SP<ast_node_t>);
   void generic_error(SP<ast_node_t>, std::string, std::string, std::string = "");
+
+  void unknown_symbol(SP<ast_node_t>);
+  void unknown_member(const std::string &, SP<type_t>, SP<ast_node_t>);
+
+  void invalid_deref(SP<type_t>, SP<ast_node_t>);
+  void invalid_cast(SP<type_t>, SP<type_t>, SP<ast_node_t>);
 };

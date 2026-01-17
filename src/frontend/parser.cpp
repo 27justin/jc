@@ -1,4 +1,5 @@
 #include "frontend/parser.hpp"
+#include "backend/type.hpp"
 #include "frontend/ast.hpp"
 #include "frontend/token.hpp"
 #include <stdexcept>
@@ -31,7 +32,7 @@ std::pair<int, int> get_binding_power(TT type) {
   case TT::operatorXor:         return {20, 21};
   case TT::delimiterLAngle:     return {31, 0};
   case TT::delimiterRAngle:     return {31, 0};
-  case TT::operatorAs:          return {51, 50};
+  case TT::operatorAs:          return {49, 50};
   default:                      return {0, 0};
   }
 }
@@ -121,26 +122,38 @@ bool P::peek(TT ty) {
   return false;
 }
 
-SP<ast_node_t> P::parse_type() {
-  auto start_loc = lexer.peek().location;
-  auto node = make_shared<ast_node_t>();
+std::string P::parse_path() {
+  expect(TT::identifier); // Expect first identifier (required in any case)
+  auto start = token.location.start;
 
-  ast_type_t type_data {};
-  if (maybe(TT::operatorExclamation)) {
-    type_data.is_pointer = true;
-  } else if (maybe(TT::operatorQuestion)) {
-    type_data.is_pointer = true;
-    type_data.is_nullable = true;
+  // Skip until end of identifier
+  while (maybe(TT::identifier) || maybe(TT::operatorDot));
+  auto end = token.location.end;
+  return source.string({start, end});
+}
+
+SP<ast_node_t> P::parse_type() {
+  auto start = lexer.peek().location.start;
+
+  type_decl_t type_data {};
+
+  if (maybe(TT::keywordVar)) {
+    type_data.is_mutable = true;
   }
 
-  expect(TT::identifier);
-  // TODO: Allow chaining (namespace access, flattened)
-  type_data.name = source.string(token.location);
+  while (maybe(TT::operatorExclamation)
+         || maybe(TT::operatorQuestion)) {
+    type_data.indirections.push_back(token.type == TT::operatorExclamation ? pointer_kind_t::eNonNullable : pointer_kind_t::eNullable);
+  }
 
-  node->type = ast_node_t::eType;
-  node->as.type = new ast_type_t(type_data);
-  node->location = token.location;
-  return node;
+  if (type_data.is_mutable && type_data.indirections.size() == 0) {
+    throw error(source, token.location, "Unexpected keyword `var`", "`var` was not expected here.", "Type declarations are only allowed to contain `var`, if they define a pointer. Otherwise this is not allowed.");
+  }
+
+
+  type_data.name = parse_path();
+
+  return make_node<type_decl_t>(ast_node_t::eType, type_data, {start, token.location.end});
 }
 
 
@@ -172,21 +185,86 @@ SP<ast_node_t> P::parse_function_call() {
   }
 
   node->as.call_expr = new call_expr_t(call);
-  node->type = ast_node_t::eCall;
+  node->kind = ast_node_t::eCall;
   node->location = {start, token.location.end};
   return node;
+}
+
+void escape_string_literal(std::string &str) {
+  size_t write_idx = 0;
+
+  for (size_t read_idx = 0; read_idx < str.length(); ++read_idx) {
+    if (str[read_idx] == '\\' && read_idx + 1 < str.length()) {
+      // Move to the character after the backslash
+      read_idx++;
+      char escape = str[read_idx];
+
+      switch (escape) {
+      case 'n':  str[write_idx++] = '\n'; break;
+      case 'r':  str[write_idx++] = '\r'; break;
+      case 't':  str[write_idx++] = '\t'; break;
+      case '\\': str[write_idx++] = '\\'; break;
+      case '\'': str[write_idx++] = '\''; break;
+      case '\"': str[write_idx++] = '\"'; break;
+      case '0':  str[write_idx++] = '\0'; break;
+
+        // Hex escape: \xFF (2 digits)
+      case 'x': {
+        if (read_idx + 2 < str.length()) {
+          std::string hex = str.substr(read_idx + 1, 2);
+          str[write_idx++] = static_cast<char>(std::stoi(hex, nullptr, 16));
+          read_idx += 2;
+        }
+        break;
+      }
+
+        // Unicode escape: \u1234 (4 digits)
+      case 'u': {
+        if (read_idx + 4 < str.length()) {
+          std::string uni = str.substr(read_idx + 1, 4);
+          uint32_t cp = static_cast<uint32_t>(std::stoul(uni, nullptr, 16));
+
+          // Basic UTF-8 conversion for the codepoint
+          if (cp <= 0x7F) {
+            str[write_idx++] = static_cast<char>(cp);
+          } else if (cp <= 0x7FF) {
+            str[write_idx++] = static_cast<char>(0xC0 | (cp >> 6));
+            str[write_idx++] = static_cast<char>(0x80 | (cp & 0x3F));
+          } else { // 0x800 to 0xFFFF
+            str[write_idx++] = static_cast<char>(0xE0 | (cp >> 12));
+            str[write_idx++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            str[write_idx++] = static_cast<char>(0x80 | (cp & 0x3F));
+          }
+          read_idx += 4;
+        }
+        break;
+      }
+
+      default:
+        // Unknown escape, keep the character
+        str[write_idx++] = escape;
+        break;
+      }
+    } else {
+      str[write_idx++] = str[read_idx];
+    }
+  }
+  str.resize(write_idx);
 }
 
 SP<ast_node_t> P::parse_primary() {
   // Parse the smallest atomic unit we can find (symbol, literal, unary operator)
   auto node = make_shared<ast_node_t>();
-  auto start = token.location.start;
+  auto start = lexer.peek().location.start;
 
   if (maybe(TT::literalString) || maybe(TT::literalInt) ||
       maybe(TT::literalFloat) || maybe(TT::literalBool)) {
+    auto str = source.string(token.location);
     literal_type_t ty {};
-    if (token.type == TT::literalString)
+    if (token.type == TT::literalString) {
+      escape_string_literal(str);
       ty = literal_type_t::eString;
+    }
     if (token.type == TT::literalInt)
       ty = literal_type_t::eInteger;
     if (token.type == TT::literalFloat)
@@ -194,8 +272,8 @@ SP<ast_node_t> P::parse_primary() {
     if (token.type == TT::literalBool)
       ty = literal_type_t::eBool;
 
-    node->type = ast_node_t::eLiteral;
-    node->as.literal_expr = new literal_expr_t(source.string(token.location), ty);
+    node->kind = ast_node_t::eLiteral;
+    node->as.literal_expr = new literal_expr_t(str, ty);
     goto done;
   }
 
@@ -203,13 +281,18 @@ SP<ast_node_t> P::parse_primary() {
     // Simple lookup
     symbol_expr_t resolver;
     resolver.identifier = source.string(token.location);
-    node->type = ast_node_t::eSymbol;
+    node->kind = ast_node_t::eSymbol;
     node->as.symbol = new symbol_expr_t(resolver);
     goto done;
   }
 
   if (maybe(TT::keywordSelf)) {
-    node->type = ast_node_t::eSelf;
+    node->kind = ast_node_t::eSelf;
+    goto done;
+  }
+
+  if (maybe(TT::keywordNil)) {
+    node->kind = ast_node_t::eNil;
     goto done;
   }
 
@@ -231,7 +314,7 @@ SP<ast_node_t> P::parse_primary() {
       addr->value = parse_expression(get_unary_binding_power(token.type));
 
       node->as.addr_of = addr;
-      node->type = ast_node_t::eAddrOf;
+      node->kind = ast_node_t::eAddrOf;
       break;
     }
     default: {
@@ -243,7 +326,7 @@ SP<ast_node_t> P::parse_primary() {
       unary->value = parse_expression(get_unary_binding_power(token.type));
 
       node->as.unary = unary;
-      node->type = ast_node_t::eUnary;
+      node->kind = ast_node_t::eUnary;
     }
     }
     goto done;
@@ -278,32 +361,39 @@ SP<ast_node_t> P::parse_expression(int min_power) {
 
     // Special case for `.`, those are member access operators.
     if (op.type == TT::operatorDot) {
+      // ... unless it is a `.*`, then it's a deref.
+      if (maybe(TT::operatorMultiply)) {
+        left = make_node<deref_expr_t>(ast_node_t::eDeref, { .value = left }, { start, token.location.end });
+        continue;
+      }
+
       expect(TT::identifier);
 
       // Member
       auto member_name = source.string(token.location);
-
-      auto member_node = make_shared<ast_node_t>();
-      member_node->type = ast_node_t::eMemberAccess;
-      member_node->as.member_access = new member_access_expr_t {
-        .object = left,
-        .member = member_name
-      };
-      member_node->location = {start, token.location.end};
-      left = member_node;
+      left = make_node<member_access_expr_t>(ast_node_t::eMemberAccess, {
+          .object = left,
+          .member = member_name
+        }, {start, token.location.end});
       continue;
     }
 
     // Special case for `->`, that is the cast operator
     if (op.type == TT::operatorAs) {
-      auto cast = make_shared<ast_node_t>();
-      cast->type = ast_node_t::eCast;
-      cast->as.cast = new cast_expr_t {
-        .value = left,
-        .type = parse_type()
-      };
-      cast->location = {start, token.location.end};
-      left = cast;
+      left = make_node<cast_expr_t>(ast_node_t::eCast, {
+          .value = left,
+          .type = parse_type()
+        }, {start, token.location.end});
+      continue;
+    }
+
+    // Special case for `=`, that is assignment
+    if (op.type == TT::operatorEqual) {
+      auto right = parse_expression(right_binding_power);
+      left = make_node<assign_expr_t>(ast_node_t::eAssignment, {
+                                                                .where = left,
+                                                                .value = right
+            }, left->location);
       continue;
     }
 
@@ -311,14 +401,11 @@ SP<ast_node_t> P::parse_expression(int min_power) {
     auto op_token = token;
 
     auto right = parse_expression(right_binding_power);
-    auto binop = make_shared<ast_node_t>();
-    binop->type = ast_node_t::eBinop;
-    binop->as.binop = new binop_expr_t {
-      .op = op.type,
-      .left = left, .right = right,
-    };
-    binop->location = op_token.location;
-    left = binop;
+    left = make_node<binop_expr_t>(ast_node_t::eBinop, {
+        .op = binop_type(op_token),
+        .left = left,
+        .right = right
+      }, {start, token.location.end});
   }
 
   left->location = {start, token.location.end};
@@ -341,7 +428,7 @@ P::parse_function_binding() {
 
   function_parameter_t arg;
   if (maybe(TT::keywordVar)) {
-    arg.is_const = false;
+    arg.is_mutable = true;
   }
 
   // Shorthand self syntax
@@ -368,7 +455,7 @@ P::parse_function_binding() {
   }
 
   node->as.fn_param = new function_parameter_t(arg);
-  node->type = ast_node_t::eFunctionParameter;
+  node->kind = ast_node_t::eFunctionParameter;
   node->location = {start, token.location.end};
   return node;
 }
@@ -393,7 +480,7 @@ P::parse_binding() {
 
   node->location = {start, token.location.end};
   node->as.declaration = new declaration_t(decl);
-  node->type = ast_node_t::eDeclaration;
+  node->kind = ast_node_t::eDeclaration;
   return node;
 }
 
@@ -426,7 +513,7 @@ P::parse_variable_decl() {
   expect(TT::delimiterSemicolon);
 
   node->as.declaration = new declaration_t(decl);
-  node->type = ast_node_t::eDeclaration;
+  node->kind = ast_node_t::eDeclaration;
   node->location = {start, token.location.end};
   return node;
 }
@@ -442,20 +529,13 @@ P::parse_function_header() {
 
   expect(TT::keywordFn); // fn
 
-  expect(TT::delimiterLAngle); // <
-  fn.type = parse_type(); // i32
-  expect(TT::delimiterRAngle); // >
+  if (maybe(TT::delimiterLAngle)) { // <
+    fn.type = parse_type(); // i32
+    expect(TT::delimiterRAngle); // >
+  } /* Without <type>, we default to void */
 
   // Function names are allowed to have dots in the name.
-  {
-    expect(TT::identifier); // Expect first identifier (required in any case)
-    auto start = token.location.start;
-
-    // Skip until end of identifier
-    while (maybe(TT::identifier) || maybe(TT::operatorDot));
-    auto end = token.location.end;
-    fn.name = source.string({start, end});
-  }
+  fn.name = parse_path();
 
   // Old names (only identifier allowed)
   // expect(TT::identifier); // stat
@@ -477,7 +557,7 @@ P::parse_function_header() {
   expect(TT::delimiterRParen); // )
 
   header->as.fn_decl = new function_decl_t(fn);
-  header->type = ast_node_t::eFunctionDecl;
+  header->kind = ast_node_t::eFunctionDecl;
   header->location = {start, token.location.end};
   return header;
 }
@@ -502,7 +582,7 @@ P::parse_extern_decl() {
   }
 
   ext->as.extern_decl = new extern_decl_t(decl);
-  ext->type = ast_node_t::eExtern;
+  ext->kind = ast_node_t::eExtern;
   ext->location = {start, token.location.end};
   return ext;
 }
@@ -515,11 +595,16 @@ P::parse_return() {
   return_stmt_t ret;
   expect(TT::keywordReturn);
 
+  if (maybe(TT::delimiterSemicolon)) {
+    // return; <- void return
+    return make_node<return_stmt_t>(ast_node_t::eReturn, {.value = nullptr}, token.location);
+  }
+
   ret.value = parse_expression();
 
   expect(TT::delimiterSemicolon);
   node->as.return_stmt = new return_stmt_t(ret);
-  node->type = ast_node_t::eReturn;
+  node->kind = ast_node_t::eReturn;
   node->location = {start, token.location.end};
   return node;
 }
@@ -527,7 +612,7 @@ P::parse_return() {
 SP<ast_node_t> P::parse_if() {
   auto node = std::make_shared<ast_node_t>();
   node->location = token.location;
-  node->type = ast_node_t::eIf;
+  node->kind = ast_node_t::eIf;
 
   if_stmt_t *stmt = new if_stmt_t {};
 
@@ -586,7 +671,7 @@ P::parse_block() {
   }
 
   node->location = {start, token.location.end};
-  node->type = ast_node_t::eBlock;
+  node->kind = ast_node_t::eBlock;
   node->as.block = new block_node_t(block);
   return node;
 }
@@ -601,7 +686,7 @@ P::parse_function_decl() {
   impl.block = parse_block();
 
   node->as.fn_impl = new function_impl_t(impl);
-  node->type = ast_node_t::eFunctionImpl;
+  node->kind = ast_node_t::eFunctionImpl;
   node->location = {start, token.location.end};
   return node;
 }
@@ -614,8 +699,7 @@ P::parse_struct_decl() {
   expect(TT::keywordStruct); // struct
   auto start = token.location.start;
 
-  expect(TT::identifier); // person
-  decl->name = source.string(token.location);
+  decl->name = parse_path();
 
   expect(TT::delimiterLBrace); // {
 
@@ -627,21 +711,21 @@ P::parse_struct_decl() {
   maybe(TT::delimiterSemicolon); // ;?
 
   node->location = {start, token.location.end};
-  node->type = ast_node_t::eStructDecl;
+  node->kind = ast_node_t::eStructDecl;
   node->as.struct_decl = decl;
   return node;
 }
 
 SP<ast_node_t>
 P::parse_type_alias() {
-  bool is_distinct = maybe(TT::keywordDistinct);
   expect(TT::keywordType);
+  bool is_distinct = maybe(TT::keywordDistinct);
 
   auto node = std::make_shared<ast_node_t>();
   node->location = token.location;
 
   type_alias_decl_t *decl = new type_alias_decl_t{};
-  node->type = ast_node_t::eTypeAlias;
+  node->kind = ast_node_t::eTypeAlias;
   node->as.alias_decl = decl;
 
   expect(TT::identifier);
@@ -657,6 +741,36 @@ P::parse_type_alias() {
   return node;
 }
 
+SP<ast_node_t>
+P::parse_attribute() {
+  expect(TT::operatorAt);
+  expect(TT::delimiterLParen);
+
+  std::map<std::string, literal_expr_t> attributes;
+  while (!maybe(TT::delimiterRParen)) {
+    expect(TT::identifier);
+    auto attr_name = source.string(token.location);
+
+    expect(TT::operatorColon);
+    auto value = parse_primary();
+
+    if (value->kind != ast_node_t::eLiteral)
+      throw error(source, token.location, "Only literals are allowed on attributes");
+
+    attributes[attr_name] = *value->as.literal_expr;
+  }
+
+  auto node = make_node<attribute_decl_t>(ast_node_t::eAttribute, {std::move(attributes)}, token.location);
+
+  if (peek(TT::keywordFn))
+    node->as.attribute_decl->affect = parse_function_decl();
+
+  if (peek(TT::keywordExtern))
+    node->as.attribute_decl->affect = parse_extern_decl();
+
+  return node;
+}
+
 translation_unit_t
 P::parse() {
   translation_unit_t tu {.source = source};
@@ -664,7 +778,7 @@ P::parse() {
   // Parse until EOF reached
   while (!lexer.eof()) {
     if (lexer.peek().type == TT::specialEof) break;
-    TT next_type = peek_any({ TT::keywordFn, TT::keywordExtern, TT::keywordStruct, TT::keywordDistinct, TT::keywordType });
+    TT next_type = peek_any({ TT::keywordFn, TT::keywordExtern, TT::keywordStruct, TT::keywordDistinct, TT::keywordType, TT::operatorAt });
 
     switch (next_type) {
     case TT::keywordFn:
@@ -680,6 +794,9 @@ P::parse() {
     case TT::keywordDistinct:
       tu.declarations.push_back(parse_type_alias());
       continue;
+    case TT::operatorAt: //< Attribute, branches to parse_function_decl, or parse_extern
+      tu.declarations.push_back(parse_attribute());
+      break;
     default:
       assert(false && "Unhandled Token Type");
       continue;
@@ -691,5 +808,34 @@ P::parse() {
     throw parse_error_t {.diagnostics = std::move(diagnostics)};
   }
   return tu;
+}
+
+binop_type_t
+P::binop_type(const token_t &tok) {
+
+  switch (tok.type) {
+  case TT::operatorPlus:
+    return binop_type_t::eAdd;
+  case TT::operatorMinus:
+    return binop_type_t::eSubtract;
+  case TT::operatorMultiply:
+    return binop_type_t::eMultiply;
+  case TT::operatorDivide:
+    return binop_type_t::eDivide;
+  case TT::operatorBooleanAnd:
+    return binop_type_t::eAnd;
+  case TT::operatorBooleanOr:
+    return binop_type_t::eOr;
+  case TT::operatorEquality:
+    return binop_type_t::eEqual;
+  case TT::operatorNotEqual:
+    return binop_type_t::eNotEqual;
+  case TT::delimiterLAngle:
+    return binop_type_t::eLT;
+  case TT::delimiterRAngle:
+    return binop_type_t::eGT;
+  default:
+    assert(false && "Invalid token type on parser_t::binop_type");
+  }
 }
 

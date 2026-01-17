@@ -86,6 +86,7 @@ token_type_t keyword(std::string_view kw) {
   if (kw == "self") return tt::keywordSelf;
   if (kw == "else") return tt::keywordElse;
   if (kw == "distinct") return tt::keywordDistinct;
+  if (kw == "nil") return tt::keywordNil;
 
   return tt::identifier;
 }
@@ -183,11 +184,26 @@ start:
   // String literals
   // ---------------
   if (next == '\'' || next == '"') {
-    // Update our location to skip past the delimiter
+    char delimiter = next;
     token.location.start = {source.line(), source.column()};
 
-    // Skip until we find the end
-    while (!source.eof() && source.next() != next);
+    while (!source.eof()) {
+      char c = source.next();
+
+      if (c == '\\') {
+        if (source.eof()) break; // Handle trailing backslash error
+
+        char escape = source.next();
+        switch (escape) {
+        case '\'': continue;
+        case '\"': continue;
+        default:
+          break;
+        }
+      } else if (c == delimiter) {
+        break; // End of string
+      }
+    }
 
     token.type = tt::literalString;
     token.location.end = {source.line(), source.column() - 1};

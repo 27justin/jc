@@ -11,6 +11,7 @@
 
 struct symbol_t {
   std::string name;
-  SP<qualified_type_t> type;
+  SP<type_t> type;
+  bool is_mutable;
 };
 

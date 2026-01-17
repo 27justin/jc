@@ -12,6 +12,7 @@
 int main(int argc, char **argv) {
   for (auto i = 1; i < argc; ++i) {
     if (std::filesystem::exists(argv[i])) {
+      std::filesystem::path file {argv[i]};
       std::stringstream raw;
       std::ifstream stream(argv[i]);
       raw << stream.rdbuf();
@@ -29,17 +30,20 @@ int main(int argc, char **argv) {
         parser_t parser(lexer, src);
         auto tu = parser.parse();
 
-        for (auto &node : tu.declarations) {
-          dump_ast(*node);
-        }
+        // for (auto &node : tu.declarations) {
+        //   dump_ast(*node);
+        // }
 
         analyzer_t analyzer(src);
         auto su = analyzer.analyze(tu);
 
+        for (auto &node : su.unit.declarations) {
+          dump_ast(*node);
+        }
+
         codegen_t codegen(std::move(su));
         codegen.generate();
-        codegen.compile_to_object("a.o");
-
+        codegen.compile_to_object(file.replace_extension("").filename());
       } catch (const parse_error_t &err) {
         for (auto &msg : err.diagnostics.messages) {
           std::cerr << serialize(msg) << "\n";
@@ -51,7 +55,5 @@ int main(int argc, char **argv) {
       }
     }
   }
-
-  std::cout << "Usage: jcc <source files...> -o <executable>\n";
 }
 

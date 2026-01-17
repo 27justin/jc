@@ -3,16 +3,33 @@
 #include <vector>
 #include <string>
 #include <memory>
-#include <optional>
+#include <map>
 
+#include "backend/type.hpp"
 #include "frontend/token.hpp"
 
 template<typename T>
 using SP = std::shared_ptr<T>;
 
-struct ast_type_t;
+struct type_decl_t;
 struct declaration_t;
 struct binop_expr_t;
+
+enum class binop_type_t {
+  eAdd,
+  eSubtract,
+  eDivide,
+  eMultiply,
+  eAnd,
+  eOr,
+  eEqual,
+  eNotEqual,
+  eGT,
+  eLT,
+  eLTE,
+  eGTE
+};
+
 struct unary_expr_t;
 struct symbol_expr_t;
 struct struct_decl_t;
@@ -29,19 +46,23 @@ struct function_parameter_t;
 struct if_stmt_t;
 struct type_alias_decl_t;
 struct cast_expr_t;
+struct deref_expr_t;
+struct attribute_decl_t;
+
+struct assign_expr_t;
 
 struct member_access_expr_t;
 
 enum class literal_type_t {eString, eInteger, eFloat, eBool};
 
 struct ast_node_t {
-  // TODO: We leak memory with our union, delete those pointers
-  ~ast_node_t() = default;
+  ~ast_node_t();
+  void reset();
 
-  enum { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast } type;
+  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute } kind;
   struct {
     union {
-      ast_type_t *type;
+      type_decl_t *type;
       declaration_t *declaration;
       binop_expr_t *binop;
       unary_expr_t *unary;
@@ -60,16 +81,22 @@ struct ast_node_t {
       if_stmt_t *if_stmt;
       type_alias_decl_t *alias_decl;
       cast_expr_t *cast;
+      assign_expr_t *assign_expr;
+      deref_expr_t *deref_expr;
+      attribute_decl_t *attribute_decl;
+      void *raw;
     };
   } as;
   source_location_t location;
+  SP<type_t> type; //< Type for code generation
 };
 
-struct ast_type_t {
+struct type_decl_t {
   // !u8
   // SP<ast_node_t> name; //< lookup_t(u8)
   std::string name; //< u8
-  bool is_pointer, is_nullable; //< is_pointer = !|?, is_nullable = ?
+  std::vector<pointer_kind_t> indirections;
+  bool is_mutable; //< is_mutable = var !/?, only applicable to pointers
 };
 
 struct declaration_t {
@@ -83,7 +110,7 @@ struct declaration_t {
 
 struct binop_expr_t {
   // 1 + 2
-  token_type_t op; //< +
+  binop_type_t op; // eAdd
   SP<ast_node_t> left, right; //< 1, 2
 };
 
@@ -163,7 +190,7 @@ struct self_decl_t {
 struct function_parameter_t {
   std::string name;
   SP<ast_node_t> type;
-  bool is_const = true;
+  bool is_mutable = false;
   bool is_self = false;
   bool is_self_ref = false;
 };
@@ -185,4 +212,28 @@ struct cast_expr_t {
   SP<ast_node_t> type;
 };
 
+struct assign_expr_t {
+  SP<ast_node_t> where;
+  SP<ast_node_t> value;
+};
+
+struct deref_expr_t {
+  SP<ast_node_t> value;
+};
+
+struct attribute_decl_t {
+  std::map<std::string, literal_expr_t> attributes;
+  SP<ast_node_t> affect;
+};
+
 void dump_ast(ast_node_t &, size_t indent = 0);
+
+template <typename Data>
+SP<ast_node_t>
+make_node(ast_node_t::kind_t kind, Data data, source_location_t loc) {
+  auto node = std::make_shared<ast_node_t>();
+  node->as.raw = new Data{std::move(data)};
+  node->kind = kind;
+  node->location = loc;
+  return node;
+}

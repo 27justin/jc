@@ -1,0 +1,68 @@
+type path = !u8;
+type mode = !u8;
+type distinct fd = i32;
+type distinct io_result = i32;
+
+struct file {
+  fd: ?any;
+  path: !u8;
+};
+
+@(import: "printf")
+extern "C" fn std.io.print(_: !u8, ..);
+
+extern "C" fn <?any> fopen(_: path, _: mode);
+
+@(import: "fwrite")
+extern "C" fn <i32> libc.fwrite(_: !u8, _: i64, _: i64, _: !any);
+
+@(import: "fread")
+extern "C" fn <i32> libc.fread(_: var !u8, _: u64, _: u64, _: !any);
+
+@(import: "fclose")
+extern "C" fn <io_result> libc.fclose(_: !any);
+
+@(import: "calloc")
+extern "C" fn <var ?any> libc.calloc(_: u64, _: u64);
+
+fn <file> file.open(path: path, mode: mode) {
+  var f: file;
+  f.fd = fopen(path, mode) -> !any;
+  f.path = path;
+  return f;
+}
+
+fn <bool> file.ok(!self) {
+    return .fd != nil;
+}
+
+fn <i32> file.write(!self, data: !u8, size: i64) {
+  return libc.fwrite(data, size, 1, .fd -> !any);
+}
+
+fn <i32> file.read(!self, buffer: var !u8, size: u64) {
+  return libc.fread(buffer, 1, size, .fd -> !any);
+}
+
+fn file.close(var !self) {
+  libc.fclose(.fd -> !any);
+  .fd = nil;
+  return;
+}
+
+fn <i32> main() {
+  var f: file = file.open("test.txt", "w");
+  if f.ok() {
+    f.write("Hello, world!\n", 14);
+  }
+  f.close();
+
+  var buf = libc.calloc(256, 1) -> var !u8;
+
+  f = file.open("test.txt", "r");
+  let read = f.read(buf, 256);
+  std.io.print("We wrote: %s\n", buf);
+
+  return 0;
+}
+

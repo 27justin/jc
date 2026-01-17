@@ -45,6 +45,10 @@ private:
   token_type_t peek_any(std::vector<token_type_t>);
 
   // Parsing Functions
+
+  /// @brief Eats tokens corresponding to a full path such as "std.mem.heap"
+  std::string parse_path();
+
   SP<ast_node_t> parse_primary();
   SP<ast_node_t> parse_expression(int min_power = 0);
 
@@ -66,5 +70,9 @@ private:
 
   SP<ast_node_t> parse_if();
   SP<ast_node_t> parse_type_alias();
+
+  SP<ast_node_t> parse_attribute();
+
+  binop_type_t binop_type(const token_t &);
 };
 

@@ -6,30 +6,30 @@
 #include <memory>
 
 type_registry_t::type_registry_t() {
-  add_builtin("void", 0, 0, type_t::kind_t::eVoid);
+  add_builtin("void", 0, 0, type_kind_t::eVoid);
 
   // Only allowed as pointer
-  add_builtin("any", 0, 0, type_t::kind_t::ePointer);
+  add_builtin("any", 0, 0, type_kind_t::eVoid);
 
   // Integers
-  add_builtin("i8", 1, 1, type_t::kind_t::eInt);
-  add_builtin("u8", 1, 1, type_t::kind_t::eUint);
+  add_builtin("i8", 1 * 8, 1, type_kind_t::eInt);
+  add_builtin("u8", 1 * 8, 1, type_kind_t::eUint);
 
-  add_builtin("i16", 2, 2, type_t::kind_t::eInt);
-  add_builtin("u16", 2, 2, type_t::kind_t::eUint);
+  add_builtin("i16", 2 * 8, 2, type_kind_t::eInt);
+  add_builtin("u16", 2 * 8, 2, type_kind_t::eUint);
 
-  add_builtin("i32", 4, 4, type_t::kind_t::eInt);
-  add_builtin("u32", 4, 4, type_t::kind_t::eUint);
+  add_builtin("i32", 4 * 8, 4, type_kind_t::eInt);
+  add_builtin("u32", 4 * 8, 4, type_kind_t::eUint);
 
-  add_builtin("i64", 8, 8, type_t::kind_t::eInt);
-  add_builtin("u64", 8, 8, type_t::kind_t::eUint);
+  add_builtin("i64", 8 * 8, 8, type_kind_t::eInt);
+  add_builtin("u64", 8 * 8, 8, type_kind_t::eUint);
 
   // Floats
-  add_builtin("f32", 4, 4, type_t::kind_t::eFloat);
-  add_builtin("f64", 8, 8, type_t::kind_t::eFloat);
+  add_builtin("f32", 4 * 8, 4, type_kind_t::eFloat);
+  add_builtin("f64", 8 * 8, 8, type_kind_t::eFloat);
 
   // Bool
-  add_builtin("bool", 1, 1, type_t::kind_t::eInt);
+  add_builtin("bool", 1, 1, type_kind_t::eBool);
 }
 
 SP<type_t> type_registry_t::resolve(const std::string &name) {
@@ -38,25 +38,10 @@ SP<type_t> type_registry_t::resolve(const std::string &name) {
   return nullptr;
 }
 
-SP<qualified_type_t> type_registry_t::get_qualified(SP<type_t> base,
-                                                    bool is_ptr, bool is_null,
-                                                    bool is_const) {
-  qualified_key_t key = { base, is_ptr, is_null, is_const };
-
-  // Check if we already have this exact flavor of type
-  auto it = qualified_cache.find(key);
-  if (it != qualified_cache.end()) {
-    return it->second;
-  }
-
-  // Not found: Create, store, and return
-  auto q = std::make_shared<qualified_type_t>(base, is_ptr, is_null, is_const);
-  qualified_cache[key] = q;
-  return q;
-}
-
-SP<type_t> type_registry_t::add_builtin(const std::string &name, size_t size, size_t alignment,
-                                        type_t::kind_t kind) {
+SP<type_t> type_registry_t::add_builtin(const std::string &name,
+                                        size_t size,
+                                        size_t alignment,
+                                        type_kind_t kind) {
   auto t = std::make_shared<type_t>();
   t->name = name;
   t->size = size;
@@ -67,9 +52,9 @@ SP<type_t> type_registry_t::add_builtin(const std::string &name, size_t size, si
 }
 
 SP<type_t> type_registry_t::add_function(
-    SP<qualified_type_t> return_type,
-    const std::vector<SP<qualified_type_t>> &arguments,
-    SP<qualified_type_t> receiver,
+    SP<type_t> return_type,
+    const std::vector<SP<type_t>> &arguments,
+    SP<type_t> receiver,
     bool is_var_args) {
   auto t = std::make_shared<type_t>();
 
@@ -80,15 +65,15 @@ SP<type_t> type_registry_t::add_function(
   signature->receiver = receiver;
   signature->is_var_args = is_var_args;
 
-  t->kind = type_t::kind_t::eFunction;
+  t->kind = type_kind_t::eFunction;
   t->as.function = signature;
 
   // Serialize into a name
   std::stringstream ss;
-  ss << "fn <" << (std::string) (*return_type) << "> (";
+  ss << "fn <" << to_string(return_type) << "> (";
 
   for (auto i = 0; i < arguments.size(); i++) {
-    ss << (std::string) (*arguments[i]);
+    ss << to_string(arguments[i]);
     if (i < arguments.size() - 1) ss << ", ";
   }
 
@@ -111,7 +96,7 @@ SP<type_t> type_registry_t::add_struct(const std::string &name,
   type->size = layout.size;
   type->alignment = layout.alignment;
 
-  type->kind = type_t::kind_t::eStruct;
+  type->kind = type_kind_t::eStruct;
   type->as.struct_layout = new struct_layout_t(std::move(layout));
   type->name = name;
 
@@ -120,7 +105,7 @@ SP<type_t> type_registry_t::add_struct(const std::string &name,
 }
 
 SP<type_t> type_registry_t::add_alias(const std::string &name,
-                                      SP<qualified_type_t> alias,
+                                      SP<type_t> alias,
                                       bool is_distinct) {
   auto type = std::make_shared<type_t>();
   type->size = size_of(alias);
@@ -129,7 +114,7 @@ SP<type_t> type_registry_t::add_alias(const std::string &name,
   type_alias_t *alias_decl = new type_alias_t {};
   alias_decl->alias = alias;
 
-  type->kind = is_distinct ? type_t::kind_t::eOpaque : type_t::kind_t::eAlias;
+  type->kind = is_distinct ? type_kind_t::eOpaque : type_kind_t::eAlias;
   type->as.alias = alias_decl;
   type->name = name;
 
@@ -137,19 +122,22 @@ SP<type_t> type_registry_t::add_alias(const std::string &name,
   return type;
 }
 
-qualified_type_t::operator std::string() const {
-  std::stringstream ss;
+SP<type_t> type_registry_t::pointer_to(SP<type_t> base,
+                                       std::vector<pointer_kind_t> indirections,
+                                       bool is_mutable) {
+  auto type = std::make_shared<type_t>();
+  type->size = sizeof(void*);
+  type->alignment = sizeof(void*);
 
-  if (!is_const)
-    ss << "var ";
+  pointer_t *ptr = new pointer_t {};
+  ptr->indirections = indirections;
+  ptr->is_mutable = is_mutable;
+  ptr->base = base;
 
-  if (is_pointer && !is_nullable)
-    ss << "!";
+  type->kind = type_kind_t::ePointer;
+  type->as.pointer = ptr;
+  type->name = base->name;
 
-  if (is_pointer && is_nullable)
-    ss << "?";
-
-  ss << base->name;
-  return ss.str();
+  registry[to_string(type)] = type;
+  return type;
 }
-

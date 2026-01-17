@@ -35,6 +35,16 @@ diagnostic_t error(const source_t &source,
   return diagnostic(diagnostic_level_t::eError, source, message, detail, suggestion, loc);
 }
 
+#define ANSI_BOLD "\u001b[1m"
+#define ANSI_ITALIC "\u001b[3m"
+#define ANSI_UNDERLINE "\u001b[4m"
+#define ANSI_RESET "\x1b[0m"
+
+#define ANSI_RED "\x1b[31m"
+#define ANSI_GREEN "\x1b[32m"
+#define ANSI_ORANGE "\x1b[33m"
+#define ANSI_BLUE "\x1b[34m"
+
 std::string serialize(const diagnostic_t &msg) {
   std::stringstream ss;
 
@@ -49,19 +59,19 @@ std::string serialize(const diagnostic_t &msg) {
     return ss.str();
   };
 
-  ss << msg.source.name() << ":" <<msg.origin.start.line << ":" << msg.origin.start.column << "\n";
+  ss << msg.source.name() << ":" <<msg.origin.start.line << ":" << msg.origin.start.column << ": " ANSI_BOLD;
   switch (msg.level) {
   case diagnostic_level_t::eError:
-    ss << "Error: ";
+    ss << ANSI_RED << "error:";
     break;
   case diagnostic_level_t::eWarn:
-    ss << "Warning: ";
+    ss << ANSI_ORANGE << "warning:";
     break;
   case diagnostic_level_t::eInfo:
-    ss << "Info: ";
+    ss << ANSI_BLUE << "info:";
     break;
   }
-  ss << msg.message << "\n\n";
+  ss << ANSI_RESET << " " << msg.message << "\n\n";
 
   auto line = msg.source.line(msg.origin.start.line);
   ss << line.substr(0, msg.origin.start.column);

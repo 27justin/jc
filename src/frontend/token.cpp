@@ -43,6 +43,8 @@ const char *to_text(token_type_t ty) {
     return "else";
   case tt::keywordDistinct:
     return "distinct";
+  case tt::keywordNil:
+    return "nil";
 
   case tt::literalString:
     return "string literal";

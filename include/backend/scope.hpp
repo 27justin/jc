@@ -5,7 +5,7 @@
 
 struct scope_t {
   SP<symbol_t> resolve(const std::string &identifier);
-  SP<symbol_t> add(const std::string &identifier, SP<qualified_type_t>);
+  SP<symbol_t> add(const std::string &identifier, SP<type_t>, bool is_mutable = false);
 
   scope_t(SP<scope_t>);
 private:

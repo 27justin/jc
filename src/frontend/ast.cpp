@@ -1,7 +1,44 @@
 #include "frontend/ast.hpp"
+#include "backend/type.hpp"
 
 #include <iostream>
 #include <string>
+
+void ast_node_t::reset() {
+  switch (kind) {
+  case eType: delete as.type; break;
+  case eDeclaration: delete as.declaration; break;
+  case eBinop: delete as.binop; break;
+  case eUnary: delete as.unary; break;
+  case eSymbol: delete as.symbol; break;
+  case eStructDecl: delete as.struct_decl; break;
+  case eBlock: delete as.block; break;
+  case eFunctionDecl: delete as.fn_decl; break;
+  case eFunctionImpl: delete as.fn_impl; break;
+  case eFunctionParameter: delete as.fn_param; break;
+  case eExtern: delete as.extern_decl; break;
+  case eReturn: delete as.return_stmt; break;
+  case eCall: delete as.call_expr; break;
+  case eLiteral: delete as.literal_expr; break;
+  case eMemberAccess: delete as.member_access; break;
+  case eAddrOf: delete as.addr_of; break;
+  case eIf: delete as.if_stmt; break;
+  case eTypeAlias: delete as.alias_decl; break;
+  case eCast: delete as.cast; break;
+  case eAssignment: delete as.assign_expr; break;
+  case eDeref: delete as.deref_expr; break;
+  case eAttribute: delete as.attribute_decl; break;
+  case eSelf:
+  case eInvalid:
+    break;
+  }
+  kind = eInvalid;
+  as.raw = nullptr;
+}
+
+ast_node_t::~ast_node_t() {
+  reset();
+}
 
 void dump_ast(ast_node_t &node, size_t indent_val) {
   auto indent = [indent_val]() {
@@ -9,7 +46,48 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   };
 
   std::cout << indent();
-  switch (node.type) {
+  switch (node.kind) {
+  case ast_node_t::eAttribute: {
+    std::cout << "[Attribute\n";
+    for (auto &[n, v] : node.as.attribute_decl->attributes) {
+      std::cout << indent() << " " << n << "\n";
+    }
+    dump_ast(*node.as.attribute_decl->affect, indent_val + 1);
+    return;
+  }
+  case ast_node_t::eNil: {
+    std::cout << "[nil]";
+    return;
+  };
+  case ast_node_t::eAssignment: {
+    assign_expr_t *expr = node.as.assign_expr;
+
+    std::cout << "[Assign \n";
+    dump_ast(*expr->where, indent_val + 1);std::cout << "\n";
+    dump_ast(*expr->value, indent_val+1);
+    std::cout << "]\n";
+    return;
+  }
+  case ast_node_t::eFunctionParameter: {
+
+    function_parameter_t *param = node.as.fn_param;
+
+    std::cout << "[Declare ";
+    std::cout << param->name;
+    std::cout << " <";
+    if (param->is_mutable) {
+      std::cout << "var ";
+    }
+
+    if (param->type)
+      dump_ast(*param->type);
+    else
+      std::cout << "self";
+
+    std::cout << ">";
+    std::cout << "]\n";
+    return;
+  }
   case ast_node_t::eIf: {
     if_stmt_t *stmt = node.as.if_stmt;
     std::cout << "[If ";
@@ -37,7 +115,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   case ast_node_t::eReturn: {
     return_stmt_t &ret = *node.as.return_stmt;
     std::cout << "[Return ";
-    dump_ast(*ret.value);
+    if (ret.value) dump_ast(*ret.value);
     std::cout << "]\n";
     return;
   };
@@ -65,7 +143,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   }
   case ast_node_t::eBinop: {
     binop_expr_t &expr = *node.as.binop;
-    std::cout << "[Binary Operation " << to_text(expr.op) << "\n";
+    std::cout << "[Binary Operation " << (int)(expr.op) << "\n";
     dump_ast(*expr.left, indent_val + 1);
     std::cout << "\n";
     dump_ast(*expr.right, indent_val + 1);
@@ -134,16 +212,16 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
     if (decl.value) {
       std::cout << " "; dump_ast(*decl.value);
     }
-    std::cout << "\n";
+    std::cout << "]\n";
     return;
   }
   case ast_node_t::eType: {
-    ast_type_t &ty = *node.as.type;
+    auto &ty = *node.as.type;
 
-    if (ty.is_pointer && ty.is_nullable)
-      std::cout << '?';
-    else if (ty.is_pointer)
-      std::cout << '!';
+    if (ty.is_mutable) std::cout << "var ";
+    for (auto indirection : ty.indirections)
+      std::cout << (indirection == pointer_kind_t::eNonNullable ? '!' : '?');
+
     std::cout << ty.name;
     return;
   }
@@ -158,7 +236,12 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   }
   case ast_node_t::eFunctionDecl: {
     auto &decl = *node.as.fn_decl;
-    std::cout << "fn <"; dump_ast(*decl.type); std::cout << "> ";
+    std::cout << "fn ";
+
+    if (decl.type) {
+      std::cout<<" <"; dump_ast(*decl.type); std::cout << "> ";
+    }
+
     std::cout << decl.name << "(";
     for (auto i = 0; i < decl.parameters.size(); ++i) {
       dump_ast(*decl.parameters[i]);
@@ -167,8 +250,29 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
     std::cout << ")";
     return;
   }
+  case ast_node_t::eStructDecl: {
+    struct_decl_t *decl = node.as.struct_decl;
+
+    std::cout << "[Struct " << decl->name << "\n";
+    for (auto &memb : decl->members) {
+      dump_ast(*memb, indent_val+1);
+    }
+    std::cout << "]\n";
+    return;
+  }
+  case ast_node_t::eTypeAlias: {
+    type_alias_decl_t *decl = node.as.alias_decl;
+    std::cout << "[Alias " << decl->alias << (decl->is_distinct ? " (opaque)" : "") << " -> ";
+    dump_ast(*decl->type, 0);
+    std::cout << "]\n";
+    return;
+  }
+  case ast_node_t::eSelf: {
+    std::cout << "[Self]";
+    return;
+  }
   default:
-    std::cerr << "<Unhandled dump_ast node type: " << (int)node.type << ">\n";
+    std::cerr << "<Unhandled dump_ast node type: " << (int)node.kind << ">\n";
     return;
   }
 }

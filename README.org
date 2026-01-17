@@ -5,7 +5,7 @@ Statically compiled programming language.
 # Example
 
 #+BEGIN_SRC jc
-  distinct type io_result = i32;
+  type distinct io_result = i32;
   type path = !u8;
 
   extern "C" fn <void> printf(msg: !u8, ..);

@@ -17,10 +17,11 @@ SP<symbol_t> scope_t::resolve(const std::string &identifier) {
   return nullptr;
 }
 
-SP<symbol_t> scope_t::add(const std::string &identifier, SP<qualified_type_t> type) {
-  symbols[identifier] = std::make_shared<symbol_t>(symbol_t {
-    .name = identifier,
-    .type = type
+SP<symbol_t> scope_t::add(const std::string &identifier, SP<type_t> type, bool is_mutable) {
+  symbols[identifier] = std::make_shared<symbol_t>(symbol_t{
+      .name = identifier,
+      .type = type,
+      .is_mutable = is_mutable
     });
   return symbols.at(identifier);
 }
