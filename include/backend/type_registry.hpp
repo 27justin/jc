@@ -15,6 +15,8 @@ struct type_registry_t {
   SP<type_t> add_alias(const std::string &name, SP<type_t>, bool is_distinct);
 
   SP<type_t> pointer_to(SP<type_t> base, std::vector<pointer_kind_t> indirections, bool is_mutable);
+  SP<type_t> array_of(SP<type_t> base, size_t len);
+  SP<type_t> slice_of(SP<type_t> base, bool is_mutable);
 private:
   std::map<std::string, SP<type_t>> registry;
 };

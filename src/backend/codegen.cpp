@@ -5,6 +5,7 @@
 #include "frontend/token.hpp"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/InstrTypes.h"
@@ -45,6 +46,37 @@ llvm_scope_t::resolve(const std::string &name) {
   return nullptr;
 }
 
+llvm::Value *
+codegen_t::make_slice_from_array(SP<type_t> arr_meta, llvm::Value *array_ptr) {
+  assert(arr_meta->kind == type_kind_t::eArray);
+
+  // 1. Get the Slice Struct Type: []T
+  // We assume you have a way to get the slice type from the element type
+  SP<type_t> slice_type = type_t::make_slice(arr_meta->as.array->element_type, true);
+  llvm::Type* llvm_slice_ty = ensure_type(slice_type);
+
+  // 2. "Decay" the array pointer to the first element pointer
+  // Equivalent to: &array[0]
+  // We use {0, 0} because array_ptr is a pointer to the array [N x T]*
+  llvm::Value* zero = builder->getInt32(0);
+  llvm::Value* head_ptr = builder->CreateInBoundsGEP(
+    ensure_type(arr_meta), // The [N x T] type
+    array_ptr,
+    {zero, zero},
+    "slice.decay"
+    );
+
+  // 3. Get the length as a constant
+  llvm::Value* len = builder->getInt64(arr_meta->as.array->size);
+
+  // 4. Build the Aggregate { ptr, len }
+  llvm::Value* slice = llvm::UndefValue::get(llvm_slice_ty);
+  slice = builder->CreateInsertValue(slice, head_ptr, 0);
+  slice = builder->CreateInsertValue(slice, len, 1);
+
+  return slice;
+}
+
 void
 codegen_t::init_target() {
   llvm::InitializeAllTargetInfos();
@@ -72,22 +104,6 @@ void codegen_t::compile_to_object(const std::string &filename) {
   llvm::raw_fd_ostream ir_dest(std::filesystem::path(filename).filename().replace_extension(".ll").string(), EC, llvm::sys::fs::OF_None);
   module->print(ir_dest, nullptr);
   module->print(llvm::outs(), nullptr);
-
-  // llvm::raw_fd_ostream dest(std::filesystem::path(filename).filename().replace_extension(".o").string(), EC, llvm::sys::fs::OF_None);
-
-  // if (EC) {
-  //   throw std::runtime_error("Could not open file: " + EC.message());
-  // }
-
-  // llvm::legacy::PassManager pass;
-
-  // auto file_type = llvm::CodeGenFileType::ObjectFile;
-  // if (target_machine->addPassesToEmitFile(pass, dest, nullptr, file_type)) {
-  //   throw std::runtime_error("TargetMachine can't emit a file of this type");
-  // }
-
-  // pass.run(*module);
-  // dest.flush();
 }
 
 codegen_t::codegen_t(semantic_info_t &&s) : info(std::move(s)) {
@@ -166,6 +182,30 @@ llvm::Type *codegen_t::ensure_type(SP<type_t> type) {
     result = llvm::Type::getVoidTy(*context);
     break;
   }
+  case type_kind_t::eArray: {
+    array_t *arr = type->as.array;
+    result = llvm::ArrayType::get(ensure_type(arr->element_type), arr->size);
+    break;
+  }
+  case type_kind_t::eSlice: {
+    // e.g., "slice.i8" or "slice.i32"
+    std::string name = "slice." + to_string(type->as.slice->element_type);
+
+    llvm::StructType *st;
+    if (st = llvm::StructType::getTypeByName(*context, name); st) {
+      result = st;
+    } else {
+      st = llvm::StructType::create(*context, name);
+      st->setBody({
+          builder->getPtrTy(), // The raw pointer
+          builder->getInt64Ty() // The length (u64/size_t)
+        });
+      result = st;
+    }
+    break;
+  }
+  default:
+    assert(false && "Internal Compiler Error: Unhandled type in LLVM type mapping");
   }
 
   // Cache the result
@@ -343,6 +383,9 @@ codegen_t::visit_declaration(SP<ast_node_t> node) {
   llvm::Type *value_type = ensure_type(node->type);
   llvm::Value *storage = builder->CreateAlloca(value_type);
 
+  // Is the declaration an lvalue (i.e. has an address and requires
+  // loading)
+  bool is_lvalue = true;
   if (stmt->value) {
     auto init = visit_node(stmt->value);
     builder->CreateStore(load(ensure_type(stmt->value->type), *init).value, storage);
@@ -351,7 +394,12 @@ codegen_t::visit_declaration(SP<ast_node_t> node) {
     builder->CreateStore(llvm::ConstantInt::getNullValue(value_type), storage);
   }
 
-  return scopes.back()->add(stmt->identifier, llvm_value_t{storage, false});
+  if (node->type->kind == type_kind_t::eArray) {
+    // Stack arrays don't need loading, they are stack addresses.
+    is_lvalue = false;
+  }
+
+  return scopes.back()->add(stmt->identifier, llvm_value_t{storage, !is_lvalue});
 }
 
 llvm_value_t *
@@ -446,6 +494,14 @@ codegen_t::visit_cast(SP<ast_node_t> node) {
   auto into = node->type;
   auto from = expr->value->type;
 
+  // Casting from a stack array to a slice is a special operation.
+  if (into->kind == type_kind_t::eSlice && from->kind == type_kind_t::eArray) {
+    auto lhs = visit_node(expr->value);
+    return new llvm_value_t {
+      make_slice_from_array(from, lhs->value), true
+    };
+  }
+
   if (ensure_type(into) != ensure_type(from)) {
     auto lhs = visit_node(expr->value);
     return new llvm_value_t{builder->CreateBitOrPointerCast(load(ensure_type(into), *lhs).value, ensure_type(into)), true};
@@ -480,6 +536,33 @@ codegen_t::visit_member_access(SP<ast_node_t> node) {
   // to access the member behind the pointer.
   if (native_type->kind == type_kind_t::ePointer) {
     native_type = native_type->as.pointer->base;
+  }
+
+  if (native_type->kind == type_kind_t::eSlice) {
+    auto slice_info = visit_node(expr->object);
+    uint32_t idx = (expr->member == "ptr") ? 0 : 1;
+
+    if (slice_info->is_rvalue == false) {
+      // If it's a variable on the stack, GEP to the field
+      auto field_ptr = builder->CreateStructGEP(ensure_type(native_type), slice_info->value, idx);
+      return new llvm_value_t(field_ptr, false);
+    } else {
+      // If it's a temporary value, extract the field
+      auto field_val = builder->CreateExtractValue(slice_info->value, {idx});
+      return new llvm_value_t(field_val, true);
+    }
+  }
+
+  if (native_type->kind == type_kind_t::eArray) {
+    auto array_info = visit_node(expr->object);
+
+    if (expr->member == "size") {
+      return new llvm_value_t{llvm::ConstantInt::get(builder->getInt64Ty(), native_type->as.array->size), true};
+    }
+
+    if (expr->member == "ptr") {
+      return new llvm_value_t { array_info->value, true };
+    }
   }
 
   assert(native_type->kind == type_kind_t::eStruct);

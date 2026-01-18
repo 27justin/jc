@@ -141,3 +141,31 @@ SP<type_t> type_registry_t::pointer_to(SP<type_t> base,
   registry[to_string(type)] = type;
   return type;
 }
+
+SP<type_t>
+type_registry_t::array_of(SP<type_t> base,
+                          size_t len) {
+  auto type = std::make_shared<type_t>();
+  type->size = sizeof(void*);
+  type->alignment = sizeof(void*);
+
+  array_t *arr = new array_t {};
+  arr->element_type = base;
+  arr->size = len;
+
+  type->kind = type_kind_t::eArray;
+  type->as.array = arr;
+  type->name = base->name;
+
+  registry[to_string(type)] = type;
+  return type;
+}
+
+SP<type_t>
+type_registry_t::slice_of(SP<type_t> base,
+                          bool is_mutable) {
+  auto type = type_t::make_slice(base, is_mutable);
+
+  registry[to_string(type)] = type;
+  return type;
+}

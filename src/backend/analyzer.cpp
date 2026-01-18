@@ -285,6 +285,15 @@ analyzer_t::analyze_type(SP<ast_node_t> node) {
   if (decl->indirections.size() > 0) {
     sq = types.pointer_to(sq, decl->indirections, decl->is_mutable);
   }
+
+  if (decl->len > 0) {
+    sq = types.array_of(sq, decl->len);
+  }
+
+  if (decl->is_slice) {
+    sq = types.slice_of(sq, decl->is_mutable);
+  }
+
   return sq;
 }
 
@@ -305,6 +314,9 @@ analyzer_t::analyze_declaration(SP<ast_node_t> node) {
 
   if (decl.value) {
     SP<type_t> val_type = analyze_node(decl.value);
+
+    if (type)
+      decl.value = coerce(decl.value, type);
 
     // Type not set yet, we infer.
     if (!type) {
@@ -448,6 +460,20 @@ bool analyzer_t::is_coercible(SP<type_t> from,
 
   if (into->kind == type_kind_t::eAlias)
     return is_coercible(from, into->as.alias->alias);
+
+  // Arrays can be coerced into slices of the same type.
+  if (into->kind == type_kind_t::eSlice &&
+      from->kind == type_kind_t::eArray &&
+      from->as.array->element_type == into->as.slice->element_type) {
+    return true;
+  }
+
+  // Arrays can be coerced into slices of the same type.
+  if (into->kind == type_kind_t::eSlice &&
+      from->kind == type_kind_t::eSlice &&
+      from->as.slice->element_type == into->as.slice->element_type) {
+    return true;
+  }
 
   return false;
 }
@@ -624,6 +650,32 @@ call_frame_t analyzer_t::prepare_call_frame(call_expr_t *expr) {
   return frame;
 }
 
+SP<ast_node_t> analyzer_t::coerce(SP<ast_node_t> node, SP<type_t> type) {
+  if (!node->type) analyze_node(node);
+  auto current_type = node->type;
+
+  if (current_type->kind == type_kind_t::eArray &&
+      type->kind == type_kind_t::eSlice) {
+
+    auto slice_type =
+      make_node<type_decl_t>(ast_node_t::eType, {
+          .name = type->name,
+          .is_mutable = true,
+          .is_slice = true
+        }, node->location);
+    // Array -> Slice requires explicit cast, that we, for
+    // conciseness, sugar away.
+    auto desugared = make_node<cast_expr_t>(ast_node_t::eCast,
+                                  {
+                                    .value = node,
+                                    .type = slice_type
+                                  }, node->location);
+    analyze_node(desugared);
+    return desugared;
+  }
+  return node;
+}
+
 SP<type_t> analyzer_t::analyze_call(SP<ast_node_t> node) {
   call_expr_t *expr = node->as.call_expr;
 
@@ -650,9 +702,10 @@ SP<type_t> analyzer_t::analyze_call(SP<ast_node_t> node) {
       continue;
 
     auto expected_ty = frame.expected_params[i];
-
     if (!is_coercible(current_ty, expected_ty)) {
       type_error(expected_ty, current_ty, frame.effective_args[i]);
+    } else {
+      frame.effective_args[i] = coerce(frame.effective_args[i], expected_ty);
     }
   }
 
@@ -753,6 +806,28 @@ analyzer_t::analyze_member_access(SP<ast_node_t> node) {
   // Pointers get automatically dereferenced by us.
   if (object->kind == type_kind_t::ePointer) {
     object = object->as.pointer->base;
+  }
+
+  // Slices & arrays have specific hidden fields
+  if (object->kind == type_kind_t::eSlice) {
+    auto slice = object->as.slice;
+    if (expr.member == "ptr")
+      return types.pointer_to(slice->element_type, {pointer_kind_t::eNonNullable}, slice->is_mutable);
+
+    if (expr.member == "size")
+      // TODO: Consider a `max` type depending on architecture instead of u64
+      return types.resolve("u64");
+  }
+
+  // Slices & arrays have specific hidden fields
+  if (object->kind == type_kind_t::eArray) {
+    auto array = object->as.array;
+    if (expr.member == "ptr")
+      return types.pointer_to(array->element_type, {pointer_kind_t::eNonNullable}, true);
+
+    if (expr.member == "size")
+      // TODO: Consider a `max` type depending on architecture instead of u64
+      return types.resolve("u64");
   }
 
   // If it's a struct, we might be accessing a member.

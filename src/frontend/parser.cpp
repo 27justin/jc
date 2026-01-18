@@ -148,12 +148,26 @@ SP<ast_node_t> P::parse_type() {
     type_data.is_mutable = true;
   }
 
+  if (maybe(TT::delimiterLBracket)) {
+    if (maybe(TT::literalInt)) {
+      // Stack array, size has to be a simple literal.
+      auto len = std::stoull(source.string(token.location));
+      type_data.len = len;
+    } else {
+      // Slice type, basically a compiler generated struct { ptr: !type; len: u64; }
+      type_data.is_slice = true;
+    }
+    expect(TT::delimiterRBracket);
+  }
+
   while (maybe(TT::operatorExclamation)
          || maybe(TT::operatorQuestion)) {
     type_data.indirections.push_back(token.type == TT::operatorExclamation ? pointer_kind_t::eNonNullable : pointer_kind_t::eNullable);
   }
 
-  if (type_data.is_mutable && type_data.indirections.size() == 0) {
+  if (type_data.is_mutable &&
+      type_data.indirections.size() == 0 &&
+      type_data.is_slice == false) {
     throw error(source, token.location, "Unexpected keyword `var`", "`var` was not expected here.", "Type declarations are only allowed to contain `var`, if they define a pointer. Otherwise this is not allowed.");
   }
 

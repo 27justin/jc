@@ -80,12 +80,24 @@ std::string to_string(const type_t &type) {
     for (auto &indirection : ptr->indirections) {
       ss << (indirection == pointer_kind_t::eNonNullable ? '!' : '?');
     }
-  }
-  default:
+    ss << to_string(ptr->base);
     break;
   }
-
-  ss << type.name;
+  case type_kind_t::eArray: {
+    array_t *arr = type.as.array;
+    ss << "[" << arr->size << "]" << to_string(arr->element_type);
+    break;
+  }
+  case type_kind_t::eSlice: {
+    slice_t *arr = type.as.slice;
+    if (arr->is_mutable) ss << "var ";
+    ss << "[]" << to_string(arr->element_type);
+    break;
+  }
+  default:
+    ss << type.name;
+    break;
+  }
   return ss.str();
 }
 
@@ -111,3 +123,20 @@ pointer_t::deref() const {
   }
 }
 
+
+SP<type_t>
+type_t::make_slice(SP<type_t> base, bool is_mutable) {
+  auto type = std::make_shared<type_t>();
+  type->size = sizeof(void*) + sizeof(size_t);
+  type->alignment = sizeof(void*);
+
+  slice_t *arr = new slice_t {};
+  arr->element_type = base;
+  arr->is_mutable = is_mutable;
+
+  type->kind = type_kind_t::eSlice;
+  type->as.slice = arr;
+  type->name = base->name;
+
+  return type;
+}

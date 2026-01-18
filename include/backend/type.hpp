@@ -50,13 +50,22 @@ struct pointer_t {
   SP<type_t> deref() const;
 };
 
-enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool };
+struct array_t {
+  SP<type_t> element_type;
+  size_t size;
+};
+
+struct slice_t {
+  SP<type_t> element_type;
+  bool is_mutable;
+};
+
+enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool, eArray, eSlice };
 struct type_t {
   type_kind_t kind;
   std::string name;
 
   size_t size, alignment; //< Alignment in bytes, size in bits.
-  SP<symbol_t> deinit; //< Called on scope exit
 
   struct {
     union {
@@ -64,12 +73,17 @@ struct type_t {
       struct_layout_t *struct_layout;
       type_alias_t *alias;
       pointer_t *pointer;
+      array_t *array;
+      slice_t *slice;
     };
   } as;
 
   ~type_t() = default;
 
   bool is_numeric() const;
+
+
+  static SP<type_t> make_slice(SP<type_t>, bool is_mutable);
 };
 
 /// @brief Return bitsize of type

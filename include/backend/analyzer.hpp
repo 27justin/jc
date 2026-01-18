@@ -222,6 +222,8 @@ private:
   /// fully specified one.
   SP<ast_node_t> lower(SP<ast_node_t> from, SP<ast_node_t> to);
 
+  SP<ast_node_t> coerce(SP<ast_node_t>, SP<type_t>);
+
   // --------
   //   Errors
   // --------

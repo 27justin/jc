@@ -85,5 +85,7 @@ private:
   llvm_value_t *visit_function_decl(SP<ast_node_t>);
   llvm_value_t *visit_function_impl(SP<ast_node_t>);
 
+  llvm::Value *make_slice_from_array(SP<type_t> arr, llvm::Value *array_ptr);
+
   llvm::TargetMachine *target_machine;
 };

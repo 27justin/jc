@@ -95,10 +95,12 @@ struct ast_node_t {
 
 struct type_decl_t {
   // !u8
-  // SP<ast_node_t> name; //< lookup_t(u8)
   std::string name; //< u8
   std::vector<pointer_kind_t> indirections;
   bool is_mutable; //< is_mutable = var !/?, only applicable to pointers
+
+  bool is_slice = false;
+  size_t len; //< Stack array if > 0
 };
 
 struct declaration_t {
