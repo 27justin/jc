@@ -55,7 +55,7 @@ fn file.close(var !self) {
   return;
 }
 
-fn i32 main() {
+fn i32 main(argc: i32, argv: !?u8) {
   var f: file = .open("test.txt", "w");
   if f.ok() {
     for i in 0..10 {

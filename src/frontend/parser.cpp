@@ -382,7 +382,7 @@ SP<ast_node_t> P::parse_expression(int min_power) {
 
     // Special case for `[`, that is an array access
     if (op.type == TT::delimiterLBracket) {
-      auto right = parse_primary();
+      auto right = parse_expression(0);
       left = make_node<deref_expr_t>(ast_node_t::eDeref, {make_node<binop_expr_t>(ast_node_t::eBinop, {
           .op = binop_type_t::eAdd,
           .left = left,
