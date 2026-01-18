@@ -41,8 +41,8 @@ fn i32 file.write(!self, data: !u8, size: i64) {
   return libc.fwrite(data, size, 1, .fd);
 }
 
-fn i32 file.read(!self, data: var !u8, len: u64) {
-  return libc.fread(data, len, 1, .fd!);
+fn i32 file.read(!self, data: var []u8) {
+  return libc.fread(data.ptr, data.len, 1, .fd!);
 }
 
 fn bool file.ok(!self) {
@@ -64,13 +64,10 @@ fn i32 main() {
   }
   f.close();
 
-  let buf: var ?u8 = libc.calloc(256, 1);
-  if buf == nil {
-    libc.exit(1);
-  }
+  let buf: [256]u8;
 
   f = file.open("test.txt", "r");
-  let read = f.read(buf!, 256);
+  let read = f.read(buf);
   std.io.print("We wrote: %s\n", buf);
 
   return 0;

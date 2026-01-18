@@ -46,6 +46,8 @@ struct pointer_t {
   bool is_mutable = false;
   std::vector<pointer_kind_t> indirections;
   SP<type_t> base;
+
+  SP<type_t> deref() const;
 };
 
 enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool };

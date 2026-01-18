@@ -72,6 +72,8 @@ private:
   SP<ast_node_t> parse_for();
   SP<ast_node_t> parse_type_alias();
 
+  SP<ast_node_t> parse_array_access();
+
   SP<ast_node_t> parse_attribute();
 
   range_expr_t parse_range();

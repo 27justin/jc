@@ -529,6 +529,12 @@ analyzer_t::analyze_binop(SP<ast_node_t> node) {
   SP<type_t> lty = analyze_node(expr->left);
   SP<type_t> rty = analyze_node(expr->right);
 
+  if (lty->kind == type_kind_t::ePointer &&
+      rty->is_numeric()) {
+    // Pointer arithmetic is allowed and returns the same pointer type.
+    return lty;
+  }
+
   if (!is_coercible(lty, rty)) {
     invalid_operation(node, lty, rty, expr->op);
     return nullptr;

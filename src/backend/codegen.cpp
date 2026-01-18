@@ -416,11 +416,16 @@ codegen_t::visit_binop(SP<ast_node_t> node) {
     auto r_val = load(ensure_type(binop->right->type), *R).value;
 
     if (l_val->getType()->isPointerTy()) {
+      auto type = ensure_type(binop->left->type->as.pointer->deref());
+
       // Pointer + Integer
-      return new llvm_value_t{builder->CreateGEP(builder->getInt8Ty(), l_val, r_val), true};
+      return new llvm_value_t{builder->CreateGEP(type, l_val, r_val), true};
+
     } else if (r_val->getType()->isPointerTy()) {
+      auto type = ensure_type(binop->right->type->as.pointer->deref());
+
       // Integer + Pointer
-      return new llvm_value_t{builder->CreateGEP(builder->getInt8Ty(), r_val, l_val), true};
+      return new llvm_value_t{builder->CreateGEP(type, r_val, l_val), true};
     } else {
       // Normal Integer addition
       result = builder->CreateAdd(l_val, r_val);

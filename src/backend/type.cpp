@@ -1,4 +1,5 @@
 #include "backend/type.hpp"
+#include <memory>
 #include <sstream>
 
 bool type_t::is_numeric() const {
@@ -86,5 +87,27 @@ std::string to_string(const type_t &type) {
 
   ss << type.name;
   return ss.str();
+}
+
+SP<type_t>
+pointer_t::deref() const {
+  if (indirections.size() == 1) {
+    return base;
+  } else {
+    // Strip away first indirection and return that as a new type.
+    auto indirections = this->indirections;
+    indirections.erase(indirections.begin());
+
+    auto type = std::make_shared<type_t>();
+    type->kind = type_kind_t::ePointer;
+    type->size = sizeof(void*);
+    type->alignment = sizeof(void*);
+    type->as.pointer = new pointer_t {
+      .is_mutable = this->is_mutable,
+      .indirections = indirections,
+      .base = this->base
+    };
+    return type;
+  }
 }
 

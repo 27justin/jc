@@ -22,6 +22,7 @@ std::pair<int, int> get_binding_power(TT type) {
   case TT::operatorMultiply:
   case TT::operatorDivide:      return {20, 21};
   case TT::delimiterLParen:     return {30, 0};  // Function Call
+  case TT::delimiterLBracket:   return {31, 0};  // Array access
   case TT::operatorExclamation: return {38, 39}; // ! has lower precedence than ., allows us to chain like .member! to cast into non-nullable pointer more easily.
   case TT::operatorDot:         return {40, 41}; // Member Access
   case TT::operatorNotEqual:    return {40, 41};
@@ -362,6 +363,18 @@ SP<ast_node_t> P::parse_expression(int min_power) {
       call->as.call_expr->callee = left;
       left = call;
       // Continue parsing the expression (allow for, e.g. `call() + 9 / 2`)
+      continue;
+    }
+
+    // Special case for `[`, that is an array access
+    if (op.type == TT::delimiterLBracket) {
+      auto right = parse_primary();
+      left = make_node<deref_expr_t>(ast_node_t::eDeref, {make_node<binop_expr_t>(ast_node_t::eBinop, {
+          .op = binop_type_t::eAdd,
+          .left = left,
+          .right = right
+            }, token.location)}, token.location);
+      expect(TT::delimiterRBracket);
       continue;
     }
 
