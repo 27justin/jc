@@ -97,7 +97,8 @@ analyzer_t::analyze_literal(SP<ast_node_t> node) {
   switch (expr->type) {
   case literal_type_t::eString: {
     // String literals are never mutable.
-    result = types.pointer_to(types.resolve("u8"), {pointer_kind_t::eNonNullable}, false);
+    //result = types.pointer_to(types.resolve("u8"), {pointer_kind_t::eNonNullable}, false);
+    result = types.array_of(types.resolve("u8"), expr->value.size());
     break;
   }
   case literal_type_t::eInteger: {
@@ -475,6 +476,12 @@ bool analyzer_t::is_coercible(SP<type_t> from,
     return true;
   }
 
+  // Slices & Arrays can decay to pointers
+  if ((from->kind == type_kind_t::eArray ||
+       from->kind == type_kind_t::eSlice) &&
+      into->kind == type_kind_t::ePointer)
+    return true;
+
   return false;
 }
 
@@ -500,6 +507,10 @@ bool analyzer_t::is_castable(SP<type_t> from,
   if (into->kind == type_kind_t::ePointer && from->kind == type_kind_t::eUint) {
     return true;
   }
+
+  // Integers can be truncated
+  if (from->is_numeric() && into->is_numeric())
+    return true;
 
   // `any` pointers can be casted into any other pointer, if explicit.
   if (into->kind == type_kind_t::ePointer &&

@@ -419,44 +419,45 @@ codegen_t::visit_binop(SP<ast_node_t> node) {
   llvm::Value *result = nullptr;
   switch (binop->op) {
   case binop_type_t::eEqual: {
-    result = builder->CreateCmp(llvm::CmpInst::ICMP_EQ,
-                                load(R->value->getType(), *L).value,
-                                load(R->value->getType(), *R).value);
+    result = builder->CreateCmp(
+        llvm::CmpInst::ICMP_EQ, load(ensure_type(binop->left->type), *L).value,
+        load(ensure_type(binop->right->type), *R).value);
     break;
   }
   case binop_type_t::eNotEqual: {
-    result = builder->CreateCmp(llvm::CmpInst::ICMP_NE,
-                                load(R->value->getType(), *L).value,
-                                load(R->value->getType(), *R).value);
+    result = builder->CreateCmp(
+        llvm::CmpInst::ICMP_NE, load(ensure_type(binop->left->type), *L).value,
+        load(ensure_type(binop->right->type), *R).value);
     break;
   }
   case binop_type_t::eLT: {
     result = builder->CreateCmp(llvm::CmpInst::ICMP_SLT,
-                                load(R->value->getType(), *L).value,
-                                load(R->value->getType(), *R).value);
+                                load(ensure_type(binop->left->type), *L).value,
+                                load(ensure_type(binop->right->type), *R).value);
     break;
   }
   case binop_type_t::eGT: {
-    result = builder->CreateCmp(llvm::CmpInst::ICMP_SGT,
-                                load(R->value->getType(), *L).value,
-                                load(R->value->getType(), *R).value);
+    result = builder->CreateCmp(
+        llvm::CmpInst::ICMP_SGT, load(ensure_type(binop->left->type), *L).value,
+        load(ensure_type(binop->right->type), *R).value);
     break;
   }
   case binop_type_t::eLTE: {
-    result = builder->CreateCmp(llvm::CmpInst::ICMP_SLE,
-                                load(R->value->getType(), *L).value,
-                                load(R->value->getType(), *R).value);
+    result = builder->CreateCmp(
+        llvm::CmpInst::ICMP_SLE, load(ensure_type(binop->left->type), *L).value,
+        load(ensure_type(binop->right->type), *R).value);
     break;
   }
   case binop_type_t::eGTE: {
-    result = builder->CreateCmp(llvm::CmpInst::ICMP_SGE,
-                                load(R->value->getType(), *L).value,
-                                load(R->value->getType(), *R).value);
+    result = builder->CreateCmp(
+        llvm::CmpInst::ICMP_SGE, load(ensure_type(binop->left->type), *L).value,
+        load(ensure_type(binop->right->type), *R).value);
     break;
   }
   case binop_type_t::eSubtract: {
-    result = builder->CreateSub(load(R->value->getType(), *L).value,
-                                load(R->value->getType(), *R).value);
+    result =
+        builder->CreateSub(load(ensure_type(binop->left->type), *L).value,
+                           load(ensure_type(binop->right->type), *R).value);
     break;
   }
   case binop_type_t::eAdd: {
@@ -480,6 +481,12 @@ codegen_t::visit_binop(SP<ast_node_t> node) {
     }
     break;
   }
+  case binop_type_t::eMultiply: {
+    result =
+        builder->CreateMul(load(ensure_type(binop->left->type), *L).value,
+                           load(ensure_type(binop->right->type), *R).value);
+    break;
+  }
   default: {
     assert(false && "Missing binop type!");
   }
@@ -500,6 +507,24 @@ codegen_t::visit_cast(SP<ast_node_t> node) {
     return new llvm_value_t {
       make_slice_from_array(from, lhs->value), true
     };
+  }
+
+  // Casting bigger ints into smaller ones give a truncate
+  if (into->is_numeric() && from->is_numeric()) {
+    auto lhs = visit_node(expr->value);
+    if (into->size > from->size) {
+      // Zero extend
+      return new llvm_value_t {
+        builder->CreateZExt(load(ensure_type(from), *lhs).value, ensure_type(into)),
+        true
+      };
+    } else {
+      // Truncate
+      return new llvm_value_t {
+        builder->CreateTruncOrBitCast(load(ensure_type(from), *lhs).value, ensure_type(into)),
+        true
+      };
+    }
   }
 
   if (ensure_type(into) != ensure_type(from)) {

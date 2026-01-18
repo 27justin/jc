@@ -42,7 +42,6 @@ fn i32 file.write(!self, data: !u8, size: i64) {
 }
 
 fn i32 file.read(!self, data: var []u8) {
-  std.io.print("Reading %i bytes into %p\n", data.size, data.ptr);
   return libc.fread(data.ptr, data.size, 1, .fd!);
 }
 
@@ -70,7 +69,7 @@ fn i32 main() {
 
   f = file.open("test.txt", "r");
   let read = f.read(slice);
-  std.io.print("We wrote: %s\n", buf);
+  std.io.print("%s\n", buf);
 
   return 0;
 }

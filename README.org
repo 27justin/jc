@@ -8,17 +8,17 @@ Statically compiled programming language.
   type distinct io_result = i32;
   type path = !u8;
 
-  extern "C" fn <void> printf(msg: !u8, ..);
-  extern "C" fn <io_result> stat(_: path, _: !statbuf);
+  extern "C" fn void printf(msg: !u8, ..);
+  extern "C" fn io_result stat(_: path, _: !statbuf);
 
-  fn <bool> io_result.ok(self) {
+  fn bool io_result.ok(self) {
       return (self -> i32) == 0;
   }
 
-  fn <i32> main () {
-    var stat1: statbuf;
+  fn i32 main () {
+    var stat: statbuf;
 
-    let err = stat("jcc", &stat1);
+    let err = stat("jcc", &stat);
     if !err.ok() {
       // Too bad...
       printf("Failed to open file\n");
