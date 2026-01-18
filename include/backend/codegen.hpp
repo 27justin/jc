@@ -76,7 +76,11 @@ private:
   llvm_value_t *visit_attribute(SP<ast_node_t>);
   llvm_value_t *visit_deref(SP<ast_node_t>);
   llvm_value_t *visit_nil(SP<ast_node_t>);
+
   void visit_if(SP<ast_node_t>);
+  void visit_for(SP<ast_node_t>);
+
+  llvm_value_t *visit_unary(SP<ast_node_t>);
 
   llvm_value_t *visit_function_decl(SP<ast_node_t>);
   llvm_value_t *visit_function_impl(SP<ast_node_t>);

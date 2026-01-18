@@ -203,6 +203,7 @@ private:
   QT analyze_self(N);
 
   QT analyze_if(N);
+  QT analyze_for(N);
   QT analyze_type_alias(N);
   QT analyze_cast(N);
   QT analyze_deref(N);

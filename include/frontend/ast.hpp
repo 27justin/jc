@@ -44,6 +44,7 @@ struct addr_of_expr_t;
 struct self_decl_t;
 struct function_parameter_t;
 struct if_stmt_t;
+struct for_stmt_t;
 struct type_alias_decl_t;
 struct cast_expr_t;
 struct deref_expr_t;
@@ -59,7 +60,7 @@ struct ast_node_t {
   ~ast_node_t();
   void reset();
 
-  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute } kind;
+  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor } kind;
   struct {
     union {
       type_decl_t *type;
@@ -84,6 +85,7 @@ struct ast_node_t {
       assign_expr_t *assign_expr;
       deref_expr_t *deref_expr;
       attribute_decl_t *attribute_decl;
+      for_stmt_t *for_stmt;
       void *raw;
     };
   } as;
@@ -224,6 +226,18 @@ struct deref_expr_t {
 struct attribute_decl_t {
   std::map<std::string, literal_expr_t> attributes;
   SP<ast_node_t> affect;
+};
+
+struct for_stmt_t {
+  SP<ast_node_t> init,
+    condition,
+    action; //< What happens after every iteration.
+  SP<ast_node_t> body;
+};
+
+struct range_expr_t {
+  SP<ast_node_t> min, max;
+  bool is_inclusive;
 };
 
 void dump_ast(ast_node_t &, size_t indent = 0);

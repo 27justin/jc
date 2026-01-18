@@ -125,3 +125,8 @@ source_t::pop() {
 
   states.pop_back();
 }
+
+void
+source_t::commit() {
+  states.pop_back();
+}

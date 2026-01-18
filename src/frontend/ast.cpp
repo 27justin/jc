@@ -28,6 +28,7 @@ void ast_node_t::reset() {
   case eAssignment: delete as.assign_expr; break;
   case eDeref: delete as.deref_expr; break;
   case eAttribute: delete as.attribute_decl; break;
+  case eFor: delete as.for_stmt; break;
   case eSelf:
   case eInvalid:
     break;
@@ -47,6 +48,25 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
 
   std::cout << indent();
   switch (node.kind) {
+  case ast_node_t::eCast: {
+    cast_expr_t *expr = node.as.cast;
+    std::cout << "[Cast ";
+    dump_ast(*expr->value, 0);
+    std::cout << " into ";
+    dump_ast(*expr->type, 0);
+    std::cout << "]";
+    return;
+  }
+  case ast_node_t::eFor: {
+    for_stmt_t *stmt = node.as.for_stmt;
+    std::cout << "[For\n";
+    std::cout << indent(); dump_ast(*stmt->init, indent_val+1); std::cout << "\n";
+    std::cout << indent(); dump_ast(*stmt->condition, indent_val+1); std::cout << "\n";
+    std::cout << indent(); dump_ast(*stmt->action, indent_val+1); std::cout << "\n";
+    std::cout << indent(); dump_ast(*stmt->body, indent_val+2); std::cout << "\n";
+    std::cout << "]\n";
+    return;
+  }
   case ast_node_t::eAttribute: {
     std::cout << "[Attribute\n";
     for (auto &[n, v] : node.as.attribute_decl->attributes) {
@@ -156,7 +176,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
 
     std::cout << "[Block\n";
     for (auto &v : block.body) {
-      dump_ast(*v, indent_val + 1);
+      dump_ast(*v, indent_val + 1);std::cout << "\n";
     }
     std::cout << "]";
     return;
@@ -265,6 +285,13 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
     std::cout << "[Alias " << decl->alias << (decl->is_distinct ? " (opaque)" : "") << " -> ";
     dump_ast(*decl->type, 0);
     std::cout << "]\n";
+    return;
+  }
+  case ast_node_t::eDeref: {
+    deref_expr_t *deref = node.as.deref_expr;
+    std::cout << "[Deref ";
+    dump_ast(*deref->value, 0);
+    std::cout << "]";
     return;
   }
   case ast_node_t::eSelf: {

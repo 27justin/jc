@@ -30,9 +30,9 @@ int main(int argc, char **argv) {
         parser_t parser(lexer, src);
         auto tu = parser.parse();
 
-        // for (auto &node : tu.declarations) {
-        //   dump_ast(*node);
-        // }
+        for (auto &node : tu.declarations) {
+          dump_ast(*node);
+        }
 
         analyzer_t analyzer(src);
         auto su = analyzer.analyze(tu);

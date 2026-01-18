@@ -69,9 +69,12 @@ private:
   SP<ast_node_t> parse_function_binding();
 
   SP<ast_node_t> parse_if();
+  SP<ast_node_t> parse_for();
   SP<ast_node_t> parse_type_alias();
 
   SP<ast_node_t> parse_attribute();
+
+  range_expr_t parse_range();
 
   binop_type_t binop_type(const token_t &);
 };

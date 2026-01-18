@@ -179,6 +179,21 @@ start:
   // ----------
   if (auto del = delimiter(next); del != tt::specialInvalid) {
     token.type = del;
+
+    // Special case for < and >
+    auto next = source.peek();
+    switch (next) {
+    case '=': {
+      source.next();
+      if (del == tt::delimiterLAngle)
+        token.type = tt::operatorLTE;
+      else if (del == tt::delimiterRAngle)
+        token.type = tt::operatorGTE;
+      break;
+    }
+    default:
+      break;
+    }
   }
 
   // String literals
@@ -263,4 +278,16 @@ token_t lexer_t::peek() {
   token_t tok = next();
   source.pop();
   return tok;
+}
+
+void lexer_t::push() {
+  source.push();
+}
+
+void lexer_t::pop() {
+  source.pop();
+}
+
+void lexer_t::commit() {
+  source.commit();
 }

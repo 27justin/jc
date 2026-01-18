@@ -105,6 +105,10 @@ const char *to_text(token_type_t ty) {
     return ".";
   case tt::operatorAs:
     return "->";
+  case tt::operatorLTE:
+    return "<=";
+  case tt::operatorGTE:
+    return ">=";
 
   case tt::delimiterLParen:
     return "(";
@@ -159,6 +163,8 @@ bool is_operator(token_type_t ty) {
   case T::operatorDollar:
   case T::operatorTilde:
   case T::operatorAs:
+  case T::operatorLTE:
+  case T::operatorGTE:
     return true;
   default:
     return false;

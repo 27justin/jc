@@ -22,6 +22,7 @@ std::pair<int, int> get_binding_power(TT type) {
   case TT::operatorMultiply:
   case TT::operatorDivide:      return {20, 21};
   case TT::delimiterLParen:     return {30, 0};  // Function Call
+  case TT::operatorExclamation: return {38, 39}; // ! has lower precedence than ., allows us to chain like .member! to cast into non-nullable pointer more easily.
   case TT::operatorDot:         return {40, 41}; // Member Access
   case TT::operatorNotEqual:    return {40, 41};
   case TT::operatorEquality:    return {40, 41};
@@ -123,11 +124,16 @@ bool P::peek(TT ty) {
 }
 
 std::string P::parse_path() {
-  expect(TT::identifier); // Expect first identifier (required in any case)
-  auto start = token.location.start;
+  if (peek(TT::identifier) == false) // We don't want to skip past yet.
+    expect(TT::identifier); // Throw error if next is not an identifier
+
+  auto start = lexer.peek().location.start;
 
   // Skip until end of identifier
-  while (maybe(TT::identifier) || maybe(TT::operatorDot));
+  while (maybe(TT::identifier)) {
+    if (!maybe(TT::operatorDot)) break;
+  }
+
   auto end = token.location.end;
   return source.string({start, end});
 }
@@ -397,6 +403,15 @@ SP<ast_node_t> P::parse_expression(int min_power) {
       continue;
     }
 
+    // Special case for `!` that coerces nullable pointers into
+    // non-nullable ones.
+    if (op.type == TT::operatorExclamation) {
+      left = make_node<unary_expr_t>(ast_node_t::eUnary,
+                                     {.op = TT::operatorExclamation, .value = left},
+                                     token.location);
+      continue;
+    }
+
     // Save to restore location
     auto op_token = token;
 
@@ -529,17 +544,26 @@ P::parse_function_header() {
 
   expect(TT::keywordFn); // fn
 
-  if (maybe(TT::delimiterLAngle)) { // <
-    fn.type = parse_type(); // i32
-    expect(TT::delimiterRAngle); // >
-  } /* Without <type>, we default to void */
+  // Push the current lexer state before trying to parse the type.
+  auto state = token;
+  lexer.push();
+  try {
+    // First try to parse with a typename
+    fn.type = parse_type();
+    fn.name = parse_path();
 
-  // Function names are allowed to have dots in the name.
-  fn.name = parse_path();
+    // Fully parsed with type info, we can throw away the lexer state
+    lexer.commit();
+  } catch (const parse_error_t &) {
+    // Pop the last diagnostics
+    diagnostics.messages.pop_back();
 
-  // Old names (only identifier allowed)
-  // expect(TT::identifier); // stat
-  // fn.name = source.string(token.location);
+    // Restore the lexer to before trying to parser the type.
+    lexer.pop();
+    token = state;
+    fn.type = nullptr;
+    fn.name = parse_path();
+  }
 
   expect(TT::delimiterLParen); // (
 
@@ -635,8 +659,87 @@ SP<ast_node_t> P::parse_if() {
   return node;
 }
 
+range_expr_t P::parse_range() {
+  range_expr_t expr;
+  auto min = parse_primary();
+
+  expect(TT::operatorRange);
+  if (maybe(TT::operatorEqual)) {
+    expr.is_inclusive = true;
+  } else {
+    expr.is_inclusive = false;
+  }
+
+  auto max = parse_primary();
+  expr.min = min;
+  expr.max = max;
+  return expr;
+}
+
+SP<ast_node_t> P::parse_for() {
+  expect(TT::keywordFor);
+
+  expect(TT::identifier);
+  // Allowed formats:
+  // `for i in 0..10`
+  // `for i: i64 in 0..10`
+  // `for i: i32 = 0; i < 10; i += 1`
+  auto init = make_shared<ast_node_t>();
+  init->kind = ast_node_t::eDeclaration;
+
+  std::string init_identifier = source.string(token.location);
+  SP<ast_node_t> init_type = nullptr;
+  SP<ast_node_t> init_value = nullptr;
+
+  if (maybe(TT::operatorColon)) {
+    init_type = parse_type();
+  }
+
+  if (maybe(TT::operatorEqual)) {
+    init_value = parse_expression();
+  }
+
+  SP<ast_node_t> condition = nullptr;
+  SP<ast_node_t> action = nullptr;
+
+  if (maybe(TT::keywordIn)) {
+    // Shorthand syntax
+    range_expr_t range = parse_range();
+    init_value = range.min;
+    condition = make_node<binop_expr_t>(ast_node_t::eBinop, {.op = range.is_inclusive ? binop_type_t::eLTE : binop_type_t::eLT, .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.identifier = init_identifier}, token.location), .right = range.max}, token.location);
+
+    // TODO: Yuck... Make this better!
+    action = make_node<assign_expr_t>(ast_node_t::eAssignment, {
+        .where = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.identifier = init_identifier}, token.location),
+        .value = make_node<binop_expr_t>(ast_node_t::eBinop, {
+            .op = binop_type_t::eAdd,
+            .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.identifier = init_identifier}, token.location),
+            .right = make_node<literal_expr_t>(ast_node_t::eLiteral, {.value = "1", .type = literal_type_t::eInteger}, token.location)
+          },token.location)
+      }, token.location);
+  } else {
+    // Classic syntax
+  }
+
+  auto block = parse_block();
+
+  return make_node<for_stmt_t>(
+      ast_node_t::eFor,
+      {
+          .init = make_node<declaration_t>(ast_node_t::eDeclaration,
+                                           {.identifier = init_identifier,
+                                            .type = init_type,
+                                            .value = init_value,
+                                            .is_mutable = true},
+                                           token.location),
+          .condition = condition,
+          .action = action,
+          .body = block
+    }, token.location);
+}
+
 SP<ast_node_t> P::parse_statement() {
-  TT next = peek_any({TT::keywordIf, TT::keywordLet, TT::keywordVar, TT::keywordReturn, TT::keywordSelf, TT::operatorDot, TT::identifier});
+  TT next = peek_any({TT::keywordIf, TT::keywordLet, TT::keywordVar, TT::keywordReturn, TT::keywordSelf, TT::operatorDot, TT::keywordFor, TT::keywordWhile, TT::identifier});
 
   switch (next) {
   case TT::keywordLet: case TT::keywordVar:
@@ -652,6 +755,8 @@ SP<ast_node_t> P::parse_statement() {
   }
   case TT::keywordIf:
     return parse_if();
+  case TT::keywordFor:
+    return parse_for();
   default:
     assert(false && "Unhandled token in parse_statement");
   }
@@ -812,7 +917,6 @@ P::parse() {
 
 binop_type_t
 P::binop_type(const token_t &tok) {
-
   switch (tok.type) {
   case TT::operatorPlus:
     return binop_type_t::eAdd;
@@ -834,6 +938,10 @@ P::binop_type(const token_t &tok) {
     return binop_type_t::eLT;
   case TT::delimiterRAngle:
     return binop_type_t::eGT;
+  case TT::operatorLTE:
+    return binop_type_t::eLTE;
+  case TT::operatorGTE:
+    return binop_type_t::eGTE;
   default:
     assert(false && "Invalid token type on parser_t::binop_type");
   }

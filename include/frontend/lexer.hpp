@@ -18,6 +18,10 @@ public:
   token_t next();
   token_t peek();
   bool eof() const;
+
+  void push();
+  void pop();
+  void commit();
 private:
   source_t &source;
   token_t token;

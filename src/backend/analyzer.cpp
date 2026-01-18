@@ -470,7 +470,7 @@ bool analyzer_t::is_castable(SP<type_t> from,
     return is_castable(from, into->as.alias->alias);
   }
 
-  // Integer can be cast into pointers...
+  // Integer can be cast into pointers
   if (into->kind == type_kind_t::ePointer && from->kind == type_kind_t::eUint) {
     return true;
   }
@@ -488,6 +488,12 @@ bool analyzer_t::is_castable(SP<type_t> from,
     if (into->name == "any" || from->name == "any") {
       return true;
     }
+
+    // Pointers of the same base type can be forced to lose/gain
+    // mutability, or nullability.
+    if (from_ptr->base == to_ptr->base)
+      return true;
+
     return false;
   }
   return false;
@@ -581,7 +587,8 @@ call_frame_t analyzer_t::prepare_call_frame(call_expr_t *expr) {
     member_access_expr_t *mem_expr = expr->callee->as.member_access;
 
     auto receiver = analyze_node(mem_expr->object);
-    if (receiver == fn->receiver) {
+    if (receiver == fn->receiver
+        || (receiver->kind == type_kind_t::ePointer && (receiver->as.pointer->base == fn->receiver))) {
       // We can only try to coerce if the receiver types are the same.
       auto self_type = fn->arg_types.front();
 
@@ -695,7 +702,7 @@ analyzer_t::flatten_member_access(SP<ast_node_t> node,
 
 SP<type_t>
 analyzer_t::analyze_member_access(SP<ast_node_t> node) {
-  member_access_expr_t *expr = node->as.member_access;
+  member_access_expr_t expr = *node->as.member_access;
 
   auto scope = get_scope();
 
@@ -735,19 +742,17 @@ analyzer_t::analyze_member_access(SP<ast_node_t> node) {
   }
 
   // Now we now look up the type of the object
-  auto object = analyze_node(expr->object);
+  auto object = analyze_node(expr.object);
 
   // Pointers get automatically dereferenced by us.
   if (object->kind == type_kind_t::ePointer) {
     object = object->as.pointer->base;
-    expr->object = make_node<deref_expr_t>(ast_node_t::eDeref, {.value = expr->object}, expr->object->location);
-    return analyze_member_access(node);
   }
 
   // If it's a struct, we might be accessing a member.
   if (object->kind == type_kind_t::eStruct) {
     auto layout = object->as.struct_layout;
-    if (auto member = layout->member(expr->member)) {
+    if (auto member = layout->member(expr.member)) {
       return member->type;
     }
   }
@@ -755,11 +760,11 @@ analyzer_t::analyze_member_access(SP<ast_node_t> node) {
   // As a last option, we lookup the typename + the member as a
   // symbol, maybe it's that.
   if (auto function =
-      scope->resolve(join({object->name, expr->member}, "."))) {
+      scope->resolve(join({object->name, expr.member}, "."))) {
     return function->type;
   }
 
-  unknown_member(expr->member, object, node);
+  unknown_member(expr.member, object, node);
   return types.resolve("void");
 }
 
@@ -819,6 +824,25 @@ SP<type_t> analyzer_t::analyze_extern(SP<ast_node_t> node) {
 
 SP<type_t> analyzer_t::analyze_unary(SP<ast_node_t> node) {
   unary_expr_t *expr = node->as.unary;
+
+  if (expr->op == token_type_t::operatorExclamation) {
+    // <value>! turns a nullable pointer into a non-nullable one.
+    auto type = analyze_node(expr->value);
+    if (type->kind != type_kind_t::ePointer) {
+      generic_error(node, "Invalid cast", fmt("Non-nullable coercion is only applicable on pointers, found type `{}`", to_string(type)));
+    }
+
+    pointer_t *ptr = type->as.pointer;
+    if (ptr->indirections.back() == pointer_kind_t::eNonNullable) {
+      generic_error(node, "Invalid cast", fmt("Non-nullable coercion on non-nullable pointers is invalid, expected non-nullable pointer, found `{}`", to_string(type)));
+    }
+
+    // TODO: Either desugar this into a custom AST node, or move it into a `cast_expr_t`
+    auto indirections = ptr->indirections;
+    indirections.pop_back();
+    indirections.push_back(pointer_kind_t::eNonNullable);
+    return types.pointer_to(ptr->base, indirections, ptr->is_mutable);
+  }
 
   // Shorthand syntax, this can be desugared into [MemberAccess [self] [expr]]
   if (expr->op == token_type_t::operatorDot) {
@@ -886,6 +910,25 @@ analyzer_t::analyze_if(SP<ast_node_t> node) {
   analyze_block(stmt->pass);
   if (stmt->reject)
     analyze_block(stmt->reject);
+
+  return types.resolve("void");
+}
+
+SP<type_t>
+analyzer_t::analyze_for(SP<ast_node_t> node) {
+  for_stmt_t *stmt = node->as.for_stmt;
+  auto bool_type = types.resolve("bool");
+
+  auto init_type = analyze_node(stmt->init);
+
+  auto condition_type = analyze_node(stmt->condition);
+  if (!is_coercible(condition_type, bool_type)) {
+    type_error(bool_type, condition_type, stmt->condition);
+  }
+
+  auto action_type = analyze_node(stmt->action);
+
+  analyze_block(stmt->body);
 
   return types.resolve("void");
 }
@@ -1061,6 +1104,10 @@ analyzer_t::analyze_node(SP<ast_node_t> node) {
 
   case ast_node_t::eAttribute:
     type = analyze_attribute(node);
+    break;
+
+  case ast_node_t::eFor:
+    type = analyze_for(node);
     break;
 
   default:

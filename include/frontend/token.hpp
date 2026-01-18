@@ -58,6 +58,8 @@ enum class token_type_t {
   operatorDollar,
   operatorTilde,
   operatorAs,
+  operatorLTE, // <=
+  operatorGTE, // >=
 
   delimiterLParen,
   delimiterRParen,

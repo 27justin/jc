@@ -30,6 +30,8 @@ struct source_t {
 
   void push();
   void pop();
+  // throw away last pushed state
+  void commit();
 
   source_t(std::string_view, const std::string &);
   source_t(const std::string &, const std::string &);

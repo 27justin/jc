@@ -394,6 +394,18 @@ codegen_t::visit_binop(SP<ast_node_t> node) {
                                 load(R->value->getType(), *R).value);
     break;
   }
+  case binop_type_t::eLTE: {
+    result = builder->CreateCmp(llvm::CmpInst::ICMP_SLE,
+                                load(R->value->getType(), *L).value,
+                                load(R->value->getType(), *R).value);
+    break;
+  }
+  case binop_type_t::eGTE: {
+    result = builder->CreateCmp(llvm::CmpInst::ICMP_SGE,
+                                load(R->value->getType(), *L).value,
+                                load(R->value->getType(), *R).value);
+    break;
+  }
   case binop_type_t::eSubtract: {
     result = builder->CreateSub(load(R->value->getType(), *L).value,
                                 load(R->value->getType(), *R).value);
@@ -458,6 +470,13 @@ codegen_t::visit_member_access(SP<ast_node_t> node) {
 
   // Get the struct type
   auto native_type = expr->object->type;
+
+  // Native type might be a pointer, if it is, we assume that we want
+  // to access the member behind the pointer.
+  if (native_type->kind == type_kind_t::ePointer) {
+    native_type = native_type->as.pointer->base;
+  }
+
   assert(native_type->kind == type_kind_t::eStruct);
 
   auto native_struct = native_type->as.struct_layout;
@@ -504,12 +523,9 @@ codegen_t::visit_attribute(SP<ast_node_t> node) {
 llvm_value_t *
 codegen_t::visit_deref(SP<ast_node_t> node) {
   deref_expr_t *deref = node->as.deref_expr;
-  // llvm::Value *value = nullptr;
-  // value = visit_node(deref->value);
-  // return builder->CreateLoad(value->getType(), value);
-
   auto value = visit_node(deref->value);
-  return new llvm_value_t{load(value->value->getType(), *value)};
+
+  return new llvm_value_t {builder->CreateLoad(ensure_type(deref->value->type), value->value), true};
 }
 
 llvm_value_t *
@@ -547,6 +563,76 @@ codegen_t::visit_if(SP<ast_node_t> node) {
 
   parent->insert(parent->end(), merge);
   builder->SetInsertPoint(merge);
+}
+
+void
+codegen_t::visit_for(SP<ast_node_t> node) {
+  for_stmt_t *stmt = node->as.for_stmt;
+
+  auto *parent = builder->GetInsertBlock()->getParent();
+
+  // 1. Create the blocks
+  // We attach 'condition' immediately so the 'init' block has somewhere to jump to
+  llvm::BasicBlock *cond = llvm::BasicBlock::Create(*context, "for.cond", parent);
+  llvm::BasicBlock *body = llvm::BasicBlock::Create(*context, "for.body", parent);
+  llvm::BasicBlock *action = llvm::BasicBlock::Create(*context, "for.inc", parent);
+  llvm::BasicBlock *merge = llvm::BasicBlock::Create(*context, "for.end", parent);
+
+  // --- INIT ---
+  // Emit initialization code in the current block
+  if (stmt->init) {
+    visit_node(stmt->init);
+  }
+  // Jump from the current block into the condition block
+  builder->CreateBr(cond);
+
+  // --- CONDITION ---
+  builder->SetInsertPoint(cond);
+  if (stmt->condition) {
+    auto cond_val = visit_node(stmt->condition);
+    // Use your 'load' hack to ensure we have an i1 value
+    llvm::Value *is_true = load(builder->getIntNTy(1), *cond_val).value;
+    builder->CreateCondBr(is_true, body, merge);
+  } else {
+    // If no condition (e.g. for ;;), it's an infinite loop
+    builder->CreateBr(body);
+  }
+
+  // --- BODY ---
+  builder->SetInsertPoint(body);
+  visit_block(stmt->body); // This is the loop body
+
+  // After the body, we jump to the action (increment) block
+  if (!builder->GetInsertBlock()->getTerminator()) {
+    builder->CreateBr(action);
+  }
+
+  // --- ACTION (Increment) ---
+  builder->SetInsertPoint(action);
+  if (stmt->action) {
+    visit_node(stmt->action);
+  }
+  // After incrementing, jump back to the condition to check again
+  builder->CreateBr(cond);
+
+  // --- MERGE (Exit) ---
+  // All subsequent code will be emitted here
+  builder->SetInsertPoint(merge);
+}
+
+llvm_value_t *
+codegen_t::visit_unary(SP<ast_node_t> node) {
+  unary_expr_t *expr = node->as.unary;
+
+  switch (expr->op) {
+  case token_type_t::operatorExclamation: {
+    // Pointer coercion, does nothing here, LLVM doesn't care.
+    return visit_node(expr->value);
+  }
+  default:
+    assert(false && "Unhandled unary operation");
+  }
+  return nullptr;
 }
 
 llvm_value_t *
@@ -636,6 +722,15 @@ codegen_t::visit_node(SP<ast_node_t> node) {
   case ast_node_t::eIf:
     visit_if(node);
     break;
+
+  case ast_node_t::eFor:
+    visit_for(node);
+    break;
+
+  case ast_node_t::eUnary:
+    result = visit_unary(node);
+    break;
+
 
   case ast_node_t::eTypeAlias: // NO-OP
     break;
