@@ -232,7 +232,7 @@ codegen_t::address_of(SP<ast_node_t> node) {
   addr_of_expr_t *expr = node->as.addr_of;
   switch (expr->value->kind) {
   case ast_node_t::eSymbol: {
-    auto id = expr->value->as.symbol->identifier;
+    auto id = to_string(expr->value->as.symbol->path);
     // The result of an address of is an rvalue (don't need to load,
     // that would be a deref.)
     return new llvm_value_t { scopes.back()->resolve(id)->value, true};
@@ -267,7 +267,7 @@ codegen_t::visit_function_decl(SP<ast_node_t> node) {
   auto func = llvm::Function::Create(llvm::dyn_cast<llvm::FunctionType>(fn_type),
                                      extern_ ? llvm::GlobalValue::ExternalLinkage
                                  : llvm::GlobalValue::ExternalLinkage,
-                         fn_decl->name, *module);
+                                     to_string(fn_decl->name), *module);
 
   if (!extern_) {
     llvm::BasicBlock *block = llvm::BasicBlock::Create(*context, "entry", func);
@@ -275,7 +275,7 @@ codegen_t::visit_function_decl(SP<ast_node_t> node) {
   }
 
   // Add the function to our scope.
-  return scopes.back()->add(fn_decl->name, llvm_value_t{func, false});
+  return scopes.back()->add(to_string(fn_decl->name), llvm_value_t{func, false});
 }
 
 llvm_value_t *
@@ -295,7 +295,22 @@ codegen_t::visit_function_impl(SP<ast_node_t> node) {
     auto type = ensure_type(decl->parameters[i]->type);
     auto param = decl->parameters[i]->as.fn_param;
 
-    scopes.back()->add(param->name, llvm_value_t{llvm_func->args().begin() + i, true});
+    bool is_rvalue = true;
+    llvm::Value *arg = llvm_func->args().begin() + i;
+    if (param->is_mutable) {
+      is_rvalue = false;
+
+      if (param->is_self && param->is_self_ref) {
+        // We don't need to store the self pointer on the stack, it's
+        // already a stack address we can most definitely write to.
+      } else {
+        auto store = builder->CreateAlloca(arg->getType());
+        builder->CreateStore(arg, store);
+        arg = store;
+      }
+    }
+
+    scopes.back()->add(param->name, llvm_value_t{arg, is_rvalue});
   }
 
   auto block = fn_impl->block->as.block;
@@ -373,7 +388,7 @@ codegen_t::visit_call(SP<ast_node_t> node) {
 llvm_value_t *
 codegen_t::visit_symbol(SP<ast_node_t> node) {
   symbol_expr_t *symbol = node->as.symbol;
-  return scopes.back()->resolve(symbol->identifier);
+  return scopes.back()->resolve(to_string(symbol->path));
 }
 
 llvm_value_t *
@@ -485,6 +500,12 @@ codegen_t::visit_binop(SP<ast_node_t> node) {
     result =
         builder->CreateMul(load(ensure_type(binop->left->type), *L).value,
                            load(ensure_type(binop->right->type), *R).value);
+    break;
+  }
+  case binop_type_t::eMod: {
+    result =
+      builder->CreateSRem(load(ensure_type(binop->left->type), *L).value,
+                         load(ensure_type(binop->right->type), *R).value);
     break;
   }
   default: {
@@ -638,7 +659,7 @@ codegen_t::visit_deref(SP<ast_node_t> node) {
   deref_expr_t *deref = node->as.deref_expr;
   auto value = visit_node(deref->value);
 
-  return new llvm_value_t {builder->CreateLoad(ensure_type(deref->value->type), value->value), true};
+  return new llvm_value_t {builder->CreateLoad(ensure_type(deref->value->type), value->value), value->is_rvalue};
 }
 
 llvm_value_t *
@@ -691,45 +712,63 @@ codegen_t::visit_for(SP<ast_node_t> node) {
   llvm::BasicBlock *action = llvm::BasicBlock::Create(*context, "for.inc", parent);
   llvm::BasicBlock *merge = llvm::BasicBlock::Create(*context, "for.end", parent);
 
-  // --- INIT ---
-  // Emit initialization code in the current block
   if (stmt->init) {
     visit_node(stmt->init);
   }
-  // Jump from the current block into the condition block
+
+  // Jump to the condition
   builder->CreateBr(cond);
 
-  // --- CONDITION ---
   builder->SetInsertPoint(cond);
   if (stmt->condition) {
     auto cond_val = visit_node(stmt->condition);
-    // Use your 'load' hack to ensure we have an i1 value
     llvm::Value *is_true = load(builder->getIntNTy(1), *cond_val).value;
     builder->CreateCondBr(is_true, body, merge);
   } else {
-    // If no condition (e.g. for ;;), it's an infinite loop
     builder->CreateBr(body);
   }
 
-  // --- BODY ---
   builder->SetInsertPoint(body);
-  visit_block(stmt->body); // This is the loop body
+  visit_block(stmt->body);
 
-  // After the body, we jump to the action (increment) block
   if (!builder->GetInsertBlock()->getTerminator()) {
     builder->CreateBr(action);
   }
 
-  // --- ACTION (Increment) ---
   builder->SetInsertPoint(action);
   if (stmt->action) {
     visit_node(stmt->action);
   }
-  // After incrementing, jump back to the condition to check again
+
+  builder->CreateBr(cond);
+  builder->SetInsertPoint(merge);
+}
+
+void
+codegen_t::visit_while(SP<ast_node_t> node) {
+  while_stmt_t *stmt = node->as.while_stmt;
+
+  auto *parent = builder->GetInsertBlock()->getParent();
+
+  llvm::BasicBlock *cond = llvm::BasicBlock::Create(*context, "while.cond", parent);
+  llvm::BasicBlock *body = llvm::BasicBlock::Create(*context, "while.body", parent);
+  llvm::BasicBlock *merge = llvm::BasicBlock::Create(*context, "while.end", parent);
+
   builder->CreateBr(cond);
 
-  // --- MERGE (Exit) ---
-  // All subsequent code will be emitted here
+  builder->SetInsertPoint(cond);
+  if (stmt->condition) {
+    auto cond_val = visit_node(stmt->condition);
+    llvm::Value *is_true = load(builder->getIntNTy(1), *cond_val).value;
+    builder->CreateCondBr(is_true, body, merge);
+  }
+
+  builder->SetInsertPoint(body);
+  visit_block(stmt->body);
+
+  if (!builder->GetInsertBlock()->getTerminator()) {
+    builder->CreateBr(cond);
+  }
   builder->SetInsertPoint(merge);
 }
 
@@ -838,6 +877,10 @@ codegen_t::visit_node(SP<ast_node_t> node) {
 
   case ast_node_t::eFor:
     visit_for(node);
+    break;
+
+  case ast_node_t::eWhile:
+    visit_while(node);
     break;
 
   case ast_node_t::eUnary:

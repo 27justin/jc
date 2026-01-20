@@ -2,6 +2,7 @@
 #include "backend/type.hpp"
 
 #include <iostream>
+#include <sstream>
 #include <string>
 
 void ast_node_t::reset() {
@@ -29,6 +30,8 @@ void ast_node_t::reset() {
   case eDeref: delete as.deref_expr; break;
   case eAttribute: delete as.attribute_decl; break;
   case eFor: delete as.for_stmt; break;
+  case eWhile: delete as.while_stmt; break;
+  case eTemplate: delete as.template_decl; break;
   case eSelf:
   case eInvalid:
     break;
@@ -211,7 +214,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   case ast_node_t::eSymbol: {
     symbol_expr_t &lookup = *node.as.symbol;
     // Type or variable
-    std::cout << "[Symbol " << lookup.identifier << "]";
+    std::cout << "[Symbol " << to_string(lookup.path) << "]";
     return;
   }
   case ast_node_t::eDeclaration: {
@@ -242,7 +245,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
     for (auto indirection : ty.indirections)
       std::cout << (indirection == pointer_kind_t::eNonNullable ? '!' : '?');
 
-    std::cout << ty.name;
+    std::cout << to_string(ty.name);
     return;
   }
   case ast_node_t::eFunctionImpl: {
@@ -262,7 +265,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
       std::cout<<" <"; dump_ast(*decl.type); std::cout << "> ";
     }
 
-    std::cout << decl.name << "(";
+    std::cout << to_string(decl.name) << "(";
     for (auto i = 0; i < decl.parameters.size(); ++i) {
       dump_ast(*decl.parameters[i]);
       if (i < decl.parameters.size() - 1) std::cout << ", ";
@@ -302,4 +305,26 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
     std::cerr << "<Unhandled dump_ast node type: " << (int)node.kind << ">\n";
     return;
   }
+}
+
+std::string to_string(const type_decl_t &type) {
+  std::stringstream ss;
+  if (type.is_mutable) ss << "var ";
+
+  if (type.is_slice) {
+    ss << "[]";
+  }
+
+  if (type.len > 0) {
+    ss << "["<<type.len<<"]";
+  }
+
+  if (type.indirections.size() > 0) {
+    for (auto &dir : type.indirections) {
+      ss << (dir == pointer_kind_t::eNonNullable ? '!' : '?');
+    }
+  }
+
+  ss << to_string(type.name);
+  return ss.str();
 }

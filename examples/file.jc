@@ -9,6 +9,9 @@ struct file {
   path: !u8;
 };
 
+fn T some.generic<T>() {
+}
+
 @(import: "fopen")
 extern "C" fn ?any libc.fopen(_: path, _: mode);
 

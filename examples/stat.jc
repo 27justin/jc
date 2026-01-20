@@ -1,4 +1,4 @@
-extern "C" fn <void> printf(msg: !u8, ..);
+extern "C" fn void printf(msg: !u8, ..);
 
 type distinct io_result = i32;
 type path = !u8;
@@ -8,23 +8,23 @@ struct statbuf {
     st_perm: i32;
 };
 
-extern "C" fn <io_result> stat(_: path, _: !statbuf);
+extern "C" fn io_result stat(_: path, _: !statbuf);
 
-fn <bool> io_result.ok(self) {
+fn bool io_result.ok(self) {
     return (self -> i32) == 0;
 }
 
-fn <statbuf> statbuf.init() {
+fn statbuf statbuf.init() {
     var value: statbuf;
     value.st_size = 999;
     return value;
 }
 
-fn <void> std.io.print(msg: !u8) {
+fn void std.io.print(msg: !u8) {
     return;
 }
 
-fn <i32> main () {
+fn i32 main () {
     std.io.print("Hello, world!");
     var stat1: statbuf = statbuf.init();
 

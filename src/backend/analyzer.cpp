@@ -145,7 +145,7 @@ analyzer_t::analyze_function_decl(SP<ast_node_t> node) {
   // The function name can be namespaced.  The last element of the
   // path is the function name, the remainder the type, or namespace.
 
-  string_list path = split(decl->name, ".");
+  string_list path = split(to_string(decl->name), ".");
   auto function_name = path.back();
   path.pop_back();
 
@@ -199,7 +199,7 @@ analyzer_t::analyze_function_decl(SP<ast_node_t> node) {
   }
 
   SP<type_t> fn_type = types.add_function(return_type, parameters, receiver, decl->is_var_args);
-  get_scope()->add(decl->name, fn_type);
+  get_scope()->add(to_string(decl->name), fn_type);
   return fn_type;
 }
 
@@ -277,7 +277,7 @@ SP<type_t>
 analyzer_t::analyze_type(SP<ast_node_t> node) {
   auto decl = node->as.type;
 
-  auto type = types.resolve(decl->name);
+  auto type = types.resolve(to_string(decl->name));
   if (!type) {
     unknown_type_error(node);
   }
@@ -585,9 +585,14 @@ SP<type_t>
 analyzer_t::analyze_symbol(SP<ast_node_t> node) {
   symbol_expr_t *expr = node->as.symbol;
 
-  auto sym = get_scope()->resolve(expr->identifier);
+  auto sym = get_scope()->resolve(to_string(expr->path));
   if (!sym) {
-    throw error(source, node->location, UNKNOWN_SYMBOL, fmt(UNKNOWN_SYMBOL_DETAIL, expr->identifier));
+    // Might be a template
+    if (expr->path.has_generic()) {
+      
+    }
+
+    throw error(source, node->location, UNKNOWN_SYMBOL, fmt(UNKNOWN_SYMBOL_DETAIL, to_string(expr->path)));
   }
 
   return sym->type;
@@ -650,7 +655,7 @@ call_frame_t analyzer_t::prepare_call_frame(call_expr_t *expr) {
     // Desugar the member access into the fully qualified symbol
     string_list path;
     flatten_member_access(expr->callee, path);
-    desugar<symbol_expr_t>(expr->callee, ast_node_t::eSymbol, {.identifier = join({fn->receiver->name, path.back()}, ".")});
+    desugar<symbol_expr_t>(expr->callee, ast_node_t::eSymbol, {.path = {{{join({fn->receiver->name, path.back()}, ".")}}}});
   }
 
   // Push the expected parameters
@@ -668,9 +673,10 @@ SP<ast_node_t> analyzer_t::coerce(SP<ast_node_t> node, SP<type_t> type) {
   if (current_type->kind == type_kind_t::eArray &&
       type->kind == type_kind_t::eSlice) {
 
+    path_t name {.segments = {{.name = type->name}}};
     auto slice_type =
       make_node<type_decl_t>(ast_node_t::eType, {
-          .name = type->name,
+          .name = name,
           .is_mutable = true,
           .is_slice = true
         }, node->location);
@@ -763,7 +769,7 @@ analyzer_t::flatten_member_access(SP<ast_node_t> node,
   // Flatten member access structures into a flat dot separated list
   if (node->kind == ast_node_t::eSymbol) {
     // Only on symbols, these might be either static, or local.
-    path.push_back(node->as.symbol->identifier);
+    path.push_back(to_string(node->as.symbol->path));
   } else if (node->kind == ast_node_t::eMemberAccess) {
     flatten_member_access(node->as.member_access->object, path);
     path.push_back(node->as.member_access->member);
@@ -793,7 +799,7 @@ analyzer_t::analyze_member_access(SP<ast_node_t> node) {
   if (auto sym = scope->resolve(join(path, "."))) {
     // It exists, then this is a static symbol.
     // Desugar this access into a normal symbol.
-    desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.identifier = join(path, ".")});
+    desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.path = {{{join(path, ".")}}}});
     return analyze_node(node);
   }
 
@@ -806,7 +812,7 @@ analyzer_t::analyze_member_access(SP<ast_node_t> node) {
     if (auto sym = scope->resolve(join(path, "."))) {
       // It exists, then this is a static symbol.
       // Desugar this access into a normal symbol.
-      desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.identifier = join(path, ".")});
+      desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.path = {{{join(path, ".")}}}});
       return analyze_node(node);
     }
   }
@@ -878,7 +884,7 @@ bool analyzer_t::is_lvalue(SP<ast_node_t> node) {
 bool analyzer_t::is_mutable(SP<ast_node_t> node) {
   switch (node->kind) {
   case ast_node_t::eSymbol:
-    return get_scope()->resolve(node->as.symbol->identifier)->is_mutable;
+    return get_scope()->resolve(to_string(node->as.symbol->path))->is_mutable;
   case ast_node_t::eMemberAccess:
     return is_mutable(node->as.member_access->object);
   case ast_node_t::eSelf:
@@ -968,7 +974,7 @@ SP<type_t> analyzer_t::analyze_unary(SP<ast_node_t> node) {
     if (has_type_infer()) {
       auto infer_path = split(get_type_infer()->name, ".");
       path.insert(path.begin(), infer_path.begin(), infer_path.end());
-      desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.identifier = join(path, ".")});
+      desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.path = {{{join(path, ".")}}}});
       return analyze_node(node);
     }
   }
@@ -1022,6 +1028,20 @@ analyzer_t::analyze_for(SP<ast_node_t> node) {
 
   analyze_block(stmt->body);
 
+  return types.resolve("void");
+}
+
+SP<type_t>
+analyzer_t::analyze_while(SP<ast_node_t> node) {
+  while_stmt_t *stmt = node->as.while_stmt;
+  auto bool_type = types.resolve("bool");
+
+  auto condition_type = analyze_node(stmt->condition);
+  if (!is_coercible(condition_type, bool_type)) {
+    type_error(bool_type, condition_type, stmt->condition);
+  }
+
+  analyze_block(stmt->body);
   return types.resolve("void");
 }
 
@@ -1099,6 +1119,11 @@ SP<type_t>
 analyzer_t::analyze_attribute(SP<ast_node_t> node) {
   attribute_decl_t *decl = node->as.attribute_decl;
   return analyze_node(decl->affect);
+}
+
+void analyzer_t::register_template(SP<ast_node_t> node) {
+  std::cout << "Registering template " << to_string(node->as.template_decl->name) << "\n";
+  templates.templates[node->as.template_decl->name] = std::make_shared<template_decl_t>(*node->as.template_decl);
 }
 
 SP<type_t>
@@ -1202,8 +1227,16 @@ analyzer_t::analyze_node(SP<ast_node_t> node) {
     type = analyze_for(node);
     break;
 
+  case ast_node_t::eWhile:
+    type = analyze_while(node);
+    break;
+
+  case ast_node_t::eTemplate:
+    register_template(node);
+    break;
+
   default:
-    assert(false && "Internal compiler error: Unhandled AST node");
+    assert(false && "Analyzer Error: Unhandled AST node");
   }
 
   node->type = type;

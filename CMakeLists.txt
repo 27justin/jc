@@ -11,6 +11,7 @@ add_executable(jcc
   src/frontend/lexer.cpp
   src/frontend/parser.cpp
   src/frontend/ast.cpp
+  src/frontend/path.cpp
 
   src/backend/analyzer.cpp
   src/backend/type_registry.cpp

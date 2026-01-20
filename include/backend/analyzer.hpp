@@ -7,6 +7,7 @@
 #include "frontend/source.hpp"
 #include "type.hpp"
 #include "type_registry.hpp"
+#include "frontend/template_registry.hpp"
 #include "symbol.hpp"
 #include "scope.hpp"
 
@@ -90,7 +91,9 @@ private:
 
   source_t &source;
   std::map<SP<ast_node_t>, SP<type_t>> resolved_types;
+
   type_registry_t types;
+  template_registry_t templates;
 
   std::vector<SP<scope_t>> scope_stack;
   std::vector<SP<type_t>> function_stack;
@@ -175,6 +178,8 @@ private:
     node->as.raw = new Data(std::move(data));
   }
 
+  void register_template(N);
+
   QT analyze_type(N);
   QT analyze_expression(N);
   QT analyze_block(N);
@@ -204,6 +209,7 @@ private:
 
   QT analyze_if(N);
   QT analyze_for(N);
+  QT analyze_while(N);
   QT analyze_type_alias(N);
   QT analyze_cast(N);
   QT analyze_deref(N);

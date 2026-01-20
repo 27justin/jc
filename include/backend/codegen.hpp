@@ -79,6 +79,7 @@ private:
 
   void visit_if(SP<ast_node_t>);
   void visit_for(SP<ast_node_t>);
+  void visit_while(SP<ast_node_t>);
 
   llvm_value_t *visit_unary(SP<ast_node_t>);
 

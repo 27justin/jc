@@ -5,8 +5,9 @@
 #include <memory>
 #include <map>
 
-#include "backend/type.hpp"
+#include "frontend/path.hpp"
 #include "frontend/token.hpp"
+#include "backend/type.hpp"
 
 template<typename T>
 using SP = std::shared_ptr<T>;
@@ -27,7 +28,8 @@ enum class binop_type_t {
   eGT,
   eLT,
   eLTE,
-  eGTE
+  eGTE,
+  eMod
 };
 
 struct unary_expr_t;
@@ -45,10 +47,12 @@ struct self_decl_t;
 struct function_parameter_t;
 struct if_stmt_t;
 struct for_stmt_t;
+struct while_stmt_t;
 struct type_alias_decl_t;
 struct cast_expr_t;
 struct deref_expr_t;
 struct attribute_decl_t;
+struct template_decl_t;
 
 struct assign_expr_t;
 
@@ -60,7 +64,7 @@ struct ast_node_t {
   ~ast_node_t();
   void reset();
 
-  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor } kind;
+  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor, eWhile, eTemplate } kind;
   struct {
     union {
       type_decl_t *type;
@@ -86,6 +90,8 @@ struct ast_node_t {
       deref_expr_t *deref_expr;
       attribute_decl_t *attribute_decl;
       for_stmt_t *for_stmt;
+      while_stmt_t *while_stmt;
+      template_decl_t *template_decl;
       void *raw;
     };
   } as;
@@ -95,7 +101,7 @@ struct ast_node_t {
 
 struct type_decl_t {
   // !u8
-  std::string name; //< u8
+  path_t name; //< u8
   std::vector<pointer_kind_t> indirections;
   bool is_mutable; //< is_mutable = var !/?, only applicable to pointers
 
@@ -128,8 +134,8 @@ struct symbol_expr_t {
   // printf("...", variable)
   // std.io.print("...")
 
-  std::string identifier; //< print/variable
-  SP<ast_node_t> scope; //< std.io
+  //std::string identifier; //< print/variable
+  path_t path;
 };
 
 struct struct_decl_t {
@@ -144,10 +150,12 @@ struct block_node_t {
 
 struct function_decl_t {
   // fn <i32> stat(file: !u8, statbuf: !any)
-  std::string name; //< stat
+  path_t name; //< stat
   SP<ast_node_t> type; //< i32
+  std::vector<std::string> template_params;
   std::vector<SP<ast_node_t>> parameters; //< file: !u8, statbuf: !any
   bool is_var_args = false;
+  bool is_generic = false;
 };
 
 struct function_impl_t {
@@ -237,10 +245,22 @@ struct for_stmt_t {
   SP<ast_node_t> body;
 };
 
+struct while_stmt_t {
+  SP<ast_node_t> condition;
+  SP<ast_node_t> body;
+};
+
 struct range_expr_t {
   SP<ast_node_t> min, max;
   bool is_inclusive;
 };
+
+struct template_decl_t {
+  path_t name;
+  SP<ast_node_t> tree;
+};
+
+std::string to_string(const type_decl_t &);
 
 void dump_ast(ast_node_t &, size_t indent = 0);
 

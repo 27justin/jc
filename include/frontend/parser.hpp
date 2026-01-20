@@ -48,6 +48,7 @@ private:
 
   /// @brief Eats tokens corresponding to a full path such as "std.mem.heap"
   std::string parse_path();
+  path_t parse_generic_path();
 
   SP<ast_node_t> parse_primary();
   SP<ast_node_t> parse_expression(int min_power = 0);
@@ -70,6 +71,7 @@ private:
 
   SP<ast_node_t> parse_if();
   SP<ast_node_t> parse_for();
+  SP<ast_node_t> parse_while();
   SP<ast_node_t> parse_type_alias();
 
   SP<ast_node_t> parse_array_access();

@@ -139,6 +139,33 @@ std::string P::parse_path() {
   return source.string({start, end});
 }
 
+path_t P::parse_generic_path() {
+  if (peek(TT::identifier) == false) // We don't want to skip past yet.
+    expect(TT::identifier); // Throw error if next is not an identifier
+
+  auto start = lexer.peek().location.start;
+
+  path_t path;
+  // Skip until end of identifier
+  while (maybe(TT::identifier)) {
+    path_element_t elem;
+    elem.name = source.string(token.location);
+
+    if (maybe(TT::delimiterLAngle)) {
+      do {
+        elem.generic_args.push_back(std::make_shared<type_decl_t>(*parse_type()->as.type));
+      } while(maybe(TT::operatorComma));
+      expect(TT::delimiterRAngle);
+    }
+
+    path.segments.push_back(elem);
+    if (!maybe(TT::operatorDot)) break;
+  }
+
+  auto end = token.location.end;
+  return path;
+}
+
 SP<ast_node_t> P::parse_type() {
   auto start = lexer.peek().location.start;
 
@@ -172,7 +199,7 @@ SP<ast_node_t> P::parse_type() {
   }
 
 
-  type_data.name = parse_path();
+  type_data.name = parse_generic_path();
 
   return make_node<type_decl_t>(ast_node_t::eType, type_data, {start, token.location.end});
 }
@@ -298,10 +325,10 @@ SP<ast_node_t> P::parse_primary() {
     goto done;
   }
 
-  if (maybe(TT::identifier)) {
+  if (peek(TT::identifier)) {
     // Simple lookup
     symbol_expr_t resolver;
-    resolver.identifier = source.string(token.location);
+    resolver.path = parse_generic_path();
     node->kind = ast_node_t::eSymbol;
     node->as.symbol = new symbol_expr_t(resolver);
     goto done;
@@ -577,7 +604,8 @@ P::parse_function_header() {
   try {
     // First try to parse with a typename
     fn.type = parse_type();
-    fn.name = parse_path();
+    //fn.name = parse_path();
+    auto path = parse_generic_path();
 
     // Fully parsed with type info, we can throw away the lexer state
     lexer.commit();
@@ -589,7 +617,7 @@ P::parse_function_header() {
     lexer.pop();
     token = state;
     fn.type = nullptr;
-    fn.name = parse_path();
+    fn.name = parse_generic_path();
   }
 
   expect(TT::delimiterLParen); // (
@@ -733,14 +761,14 @@ SP<ast_node_t> P::parse_for() {
     // Shorthand syntax
     range_expr_t range = parse_range();
     init_value = range.min;
-    condition = make_node<binop_expr_t>(ast_node_t::eBinop, {.op = range.is_inclusive ? binop_type_t::eLTE : binop_type_t::eLT, .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.identifier = init_identifier}, token.location), .right = range.max}, token.location);
+    condition = make_node<binop_expr_t>(ast_node_t::eBinop, {.op = range.is_inclusive ? binop_type_t::eLTE : binop_type_t::eLT, .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = {{{init_identifier}}}}, token.location), .right = range.max}, token.location);
 
     // TODO: Yuck... Make this better!
     action = make_node<assign_expr_t>(ast_node_t::eAssignment, {
-        .where = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.identifier = init_identifier}, token.location),
+        .where = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = {{{init_identifier}}}}, token.location),
         .value = make_node<binop_expr_t>(ast_node_t::eBinop, {
             .op = binop_type_t::eAdd,
-            .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.identifier = init_identifier}, token.location),
+            .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = {{{init_identifier}}}}, token.location),
             .right = make_node<literal_expr_t>(ast_node_t::eLiteral, {.value = "1", .type = literal_type_t::eInteger}, token.location)
           },token.location)
       }, token.location);
@@ -765,6 +793,19 @@ SP<ast_node_t> P::parse_for() {
     }, token.location);
 }
 
+SP<ast_node_t> P::parse_while() {
+  expect(TT::keywordWhile);
+
+  auto location = token.location;
+  auto condition = parse_expression();
+  auto body = parse_block();
+
+  return make_node<while_stmt_t>(ast_node_t::eWhile, {
+                                                         .condition = condition,
+                                                         .body = body
+    }, location);
+}
+
 SP<ast_node_t> P::parse_statement() {
   TT next = peek_any({TT::keywordIf, TT::keywordLet, TT::keywordVar, TT::keywordReturn, TT::keywordSelf, TT::operatorDot, TT::keywordFor, TT::keywordWhile, TT::identifier});
 
@@ -782,8 +823,13 @@ SP<ast_node_t> P::parse_statement() {
   }
   case TT::keywordIf:
     return parse_if();
+
   case TT::keywordFor:
     return parse_for();
+
+  case TT::keywordWhile:
+    return parse_while();
+
   default:
     assert(false && "Unhandled token in parse_statement");
   }
@@ -817,10 +863,20 @@ P::parse_function_decl() {
   impl.declaration = parse_function_header();
   impl.block = parse_block();
 
+  function_decl_t *decl = impl.declaration->as.fn_decl;
+
   node->as.fn_impl = new function_impl_t(impl);
   node->kind = ast_node_t::eFunctionImpl;
   node->location = {start, token.location.end};
-  return node;
+  if (decl->name.has_generic() == false) {
+    return node;
+  } else {
+    return make_node<template_decl_t>(ast_node_t::eTemplate,
+                                      {
+                                        .name = decl->name,
+                                        .tree = node
+                                      }, {start, token.location.end});
+  }
 }
 
 SP<ast_node_t>
@@ -969,6 +1025,8 @@ P::binop_type(const token_t &tok) {
     return binop_type_t::eLTE;
   case TT::operatorGTE:
     return binop_type_t::eGTE;
+  case TT::operatorMod:
+    return binop_type_t::eMod;
   default:
     assert(false && "Invalid token type on parser_t::binop_type");
   }
