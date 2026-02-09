@@ -82,6 +82,7 @@ private:
   QT analyze_nil(N);
   QT analyze_if(N);
   QT analyze_assignment(N);
+  QT analyze_while(N);
 
   bool is_static_dispatch(N);
   bool is_dynamic_dispatch(N);

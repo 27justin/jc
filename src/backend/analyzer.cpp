@@ -116,7 +116,7 @@ A::resolve_type(const type_decl_t &ty) {
       return scope().types.slice_of(base, ty.is_mutable);
     }
 
-    if (ty.is_slice && ty.len != nullptr) {
+    if (ty.len != nullptr) {
       if (ty.len->kind == ast_node_t::eLiteral)
         return scope().types.array_of(base, std::stoll(ty.len->as.literal_expr->value));
       else
@@ -711,6 +711,20 @@ A::is_implicit_convertible(QT from, QT into) {
     return types_match || involves_any;
   }
 
+  // Slices & Stack arrays can decay to pointer
+  if ((from->kind == type_kind_t::eArray ||
+       from->kind == type_kind_t::eSlice) &&
+      into->kind == type_kind_t::ePointer) {
+
+    if (from->kind == type_kind_t::eArray &&
+        *from->as.array->element_type == *into->as.pointer->base)
+      return true;
+
+    if (from->kind == type_kind_t::eArray &&
+        *from->as.slice->element_type == *into->as.pointer->base)
+      return true;
+  }
+
   return false;
 }
 
@@ -887,6 +901,22 @@ A::analyze_assignment(N node) {
 }
 
 QT
+A::analyze_while(N node) {
+  while_stmt_t *stmt = node->as.while_stmt;
+
+  QT type = analyze_node(stmt->condition);
+  QT bool_type = resolve_type("bool");
+
+  if (!is_implicit_convertible(type, bool_type)) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Invalid type", fmt("While condition expression has to be convertible to bool, {} is not.", to_string(type))));
+    throw analyze_error_t{diagnostics};
+  }
+
+  analyze_node(stmt->body);
+  return resolve_type("void");
+}
+
+QT
 A::analyze_node(N node) {
   QT type {};
 
@@ -974,6 +1004,10 @@ A::analyze_node(N node) {
 
   case ast_node_t::eAssignment:
     type = analyze_assignment(node);
+    break;
+
+  case ast_node_t::eWhile:
+    type = analyze_while(node);
     break;
 
   default:

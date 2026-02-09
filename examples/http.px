@@ -79,11 +79,11 @@ main := fn (argc: i32) {
 
   var data: [4096]u8
   while true {
-    var clientaddr_len: u64 = zero
-    var clientaddr: linux.sockaddr = zero
+    var clientaddr_len: u64
+    var clientaddr: linux.sockaddr
     let client := linux.accept(socket, &clientaddr, &clientaddr_len)
 
-    let bytes := libc.read(socket, data, data.size)
+    let bytes := libc.read(socket, data, 4096 as u64)
     libc.printf("Read %lli bytes\n", bytes)
   }
 }
