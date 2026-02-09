@@ -6,15 +6,21 @@
 #include <map>
 
 struct scope_t {
-  SP<symbol_t> resolve(const path_t &identifier);
-  SP<symbol_t> add(const path_t &identifier, SP<type_t>,
+  SP<symbol_t> resolve(const std::string &identifier);
+  SP<symbol_t> resolve(const specialized_path_t &identifier);
+
+  SP<symbol_t> add(const std::string &identifier, SP<type_t>,
                    bool is_mutable = false);
-  void remove(const path_t &identifier);
+  SP<symbol_t> add(const specialized_path_t &identifier, SP<type_t>,
+                   bool is_mutable = false);
 
-  void add_template(SP<binding_decl_t>);
+  void remove(const std::string &identifier);
+  void remove(const specialized_path_t &identifier);
 
-  std::vector<SP<binding_decl_t>>
-  candidates(const path_t &path);
+  void add_template(SP<template_decl_t>);
+
+  std::vector<SP<template_decl_t>>
+  candidates(const specialized_path_t &path);
 
   scope_t(SP<scope_t>);
 
@@ -23,7 +29,7 @@ struct scope_t {
   type_registry_t types;
 private:
   std::map<std::string, SP<symbol_t>> symbols;
-  std::vector<SP<binding_decl_t>> templates;
+  std::vector<SP<template_decl_t>> templates;
   SP<scope_t> parent;
 };
 

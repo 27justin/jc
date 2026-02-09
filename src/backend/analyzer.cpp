@@ -9,49 +9,13 @@
 #include "frontend/ast.hpp"
 #include "frontend/diagnostic.hpp"
 #include "frontend/parser.hpp"
+#include "frontend/path.hpp"
 #include "frontend/token.hpp"
 
 using QT = SP<type_t>;
 using N = SP<ast_node_t>;
 using std::make_shared;
 using A = analyzer_t;
-
-std::string
-mangle(const type_decl_t &);
-std::string
-mangle(const path_t &);
-
-std::string
-mangle(const type_decl_t &decl) {
-  std::stringstream ss;
-
-  if (decl.is_slice)
-    ss << "S";
-
-  for (auto &_ : decl.indirections)
-    ss << "P";
-
-  ss << mangle(decl.name);
-  return ss.str();
-}
-
-std::string
-mangle(const path_t &path) {
-  std::stringstream mangled;
-
-  mangled << "_P";
-
-  for (auto &segment : path.segments) {
-    mangled << segment.name.size() << segment.name;
-    if (segment.generic_args.size() > 0) {
-      mangled << "_";
-      for (auto &generic : segment.generic_args) {
-        mangled << mangle(*generic.binding);
-      }
-    }
-  }
-  return mangled.str();
-}
 
 void A::import_source_file(const std::string &path) {
   auto src = std::make_shared<source_t>(source_t::from_file(path));
@@ -140,77 +104,54 @@ A::pop_scope() {
   scope_stack.pop_back();
 }
 
-bool
-A::is_template_instantiation(const path_t &path) {
-  for (auto &segment : path.segments) {
-    for (auto &generic : segment.generic_args) {
-      if (resolve_type(*generic.binding) == nullptr)
-        return false;
-    }
-  }
-  return true;
-}
-
-bool
-A::is_template_declaration(const path_t &path) {
-  return !is_template_instantiation(path);
-}
-
-path_t A::resolve_template_instantiation(const path_t &path) {
-  path_t result = path;
-
-  for (auto &segment : result.segments) {
-    for (auto &generic : segment.generic_args) {
-      QT type = resolve_type(generic.binding->name);
-      generic.binding = make_shared<type_decl_t>(*generic.binding);
-      generic.binding->name = type->name;
-    }
-  }
-  return result;
-}
-
 QT
 A::resolve_type(const type_decl_t &ty) {
-  // Template declarations have no type.
-  if (is_template_declaration(ty.name)) {
-    return nullptr;
-  }
-
-  // Difficult case, `ty` might be a template instantiation
-  if (ty.name.has_generic() && is_template_instantiation(ty.name)) {
-    path_t name = resolve_template_instantiation(ty.name);
-    auto candidates = scope().candidates(name);
-    if (candidates.size() > 0) {
-      return monomorphize(candidates.front(), name);
+  QT base = scope().types.resolve(ty.name);
+  if (base) {
+    if (ty.indirections.size() > 0) {
+      return scope().types.pointer_to(base, ty.indirections, ty.is_mutable);
     }
-  } else {
-    // Simple case, `ty` refers to a fully-qualified type.
-    QT base = scope().types.resolve(ty.name);
-    if (base) {
-      if (ty.indirections.size() > 0) {
-        return scope().types.pointer_to(base, ty.indirections, ty.is_mutable);
-      }
 
-      if (ty.is_slice && ty.len == nullptr) {
+    if (ty.is_slice && ty.len == nullptr) {
+      return scope().types.slice_of(base, ty.is_mutable);
+    }
+
+    if (ty.is_slice && ty.len != nullptr) {
+      if (ty.len->kind == ast_node_t::eLiteral)
+        return scope().types.array_of(base, std::stoll(ty.len->as.literal_expr->value));
+      else
         return scope().types.slice_of(base, ty.is_mutable);
-      }
-
-      if (ty.is_slice && ty.len != nullptr) {
-        if (ty.len->kind == ast_node_t::eLiteral)
-          return scope().types.array_of(base, std::stoll(ty.len->as.literal_expr->value));
-        else
-          return scope().types.slice_of(base, ty.is_mutable);
-      }
-      return base;
     }
+    return base;
+  } else {
+    // Might be a template, which requires monomorphization
+    auto template_candidates = scope().candidates(ty.name);
+    if (template_candidates.empty()) {
+      return nullptr;
+    }
+    return monomorphize(template_candidates.front(), ty.name);
   }
-
   return nullptr;
 }
 
-QT A::resolve_type(const path_t &path) {
+specialized_path_t
+A::resolve_path(const specialized_path_t &path) {
+  specialized_path_t result = path;
+
+  for (auto &segment : result.segments) {
+    for (auto &ty : segment.types) {
+      auto type = resolve_type(*ty);
+      ty = make_shared<type_decl_t>(*ty);
+      ty->name = type->name;
+    }
+  }
+
+  return result;
+}
+
+QT A::resolve_type(const specialized_path_t &path) {
   type_decl_t decl {
-    .name = path,
+    .name = resolve_path(path),
     .indirections = {}, .is_mutable = false, .is_slice = false,
     .len = nullptr,
   };
@@ -219,7 +160,7 @@ QT A::resolve_type(const path_t &path) {
 
 QT A::resolve_type(const std::string &name) {
   type_decl_t decl {
-    .name = {{{name}}},
+    .name = specialized_path_t ({name}),
     .indirections = {}, .is_mutable = false, .is_slice = false,
     .len = nullptr,
   };
@@ -265,13 +206,13 @@ A::analyze_function_impl(N node, SP<type_t> implicit_receiver) {
   // Register parameters
   for (auto &param : impl->declaration.parameters) {
     if (param.is_self == false) {
-      scope().add(path_t{{{param.name}}}, resolve_type(param.type), param.is_mutable);
+      scope().add(param.name, resolve_type(param.type), param.is_mutable);
     } else {
       auto self = implicit_receiver;
       if (param.is_self_ref) {
         self = scope().types.pointer_to(self, {pointer_kind_t::eNonNullable}, param.is_mutable);
       }
-      scope().add(path_t{{{"self"}}}, implicit_receiver, param.is_mutable);
+      scope().add("self", implicit_receiver, param.is_mutable);
     }
   }
 
@@ -290,15 +231,16 @@ A::analyze_function_impl(N node, SP<type_t> implicit_receiver) {
 
 QT
 A::analyze_binding(N node) {
-  binding_decl_t *decl = node->as.binding_decl;
-
-  if (decl->name.has_generic() && is_template_declaration(decl->name)) {
-    // Monomorphization hits, we can't instantiate this, rather we register this
-    scope().add_template(make_shared<binding_decl_t>(*decl));
+  if (node->kind == ast_node_t::eTemplate) {
+    template_decl_t *decl = node->as.template_decl;
+    scope().add_template(make_shared<template_decl_t>(*decl));
     return nullptr;
   }
 
-  if (decl->name.has_generic() && is_template_instantiation(decl->name)) {
+  binding_decl_t *decl = node->as.binding_decl;
+
+  if (!decl->name.is_simple()) {
+    // Template specialization
     auto candidates = scope().candidates(decl->name);
     if (candidates.empty()) {
       diagnostics.messages.emplace_back(error(node->source, node->location, "Invalid template instantiation", "No candidate matches this template."));
@@ -462,7 +404,7 @@ A::analyze_declaration(N node) {
     throw analyze_error_t {diagnostics};
   }
 
-  scope().add({{{decl->identifier}}}, final_type, decl->is_mutable);
+  scope().add(decl->identifier, final_type, decl->is_mutable);
   return final_type;
 }
 
@@ -493,12 +435,8 @@ QT
 A::analyze_symbol(N node) {
   auto path = node->as.symbol->path;
 
-  if (path.has_generic() && is_template_declaration(path)) {
-    diagnostics.messages.push_back(error(node->source, node->location, "Invalid template", "Expected template instantiation, got declaration, ensure all generics are fully specified."));
-    throw analyze_error_t {diagnostics};
-  }
-
-  if (path.has_generic() && is_template_instantiation(path)) {
+  if (!path.is_simple()) {
+    path = resolve_path(path);
     auto candidates = scope().candidates(path);
     if (candidates.empty()) {
       diagnostics.messages.push_back(error(node->source, node->location, "Unknown template", "Couldn't infer what template to use here."));
@@ -516,17 +454,17 @@ A::analyze_symbol(N node) {
   //
   // Generally, 1 has higher precendence over two.
 
-  path_t pcopy = path;
-  SP<symbol_t> sym = scope().resolve(path_t {{{pcopy.segments.front()}}});
+  specialized_path_t pcopy = path;
+  SP<symbol_t> sym = scope().resolve(specialized_path_t {{{pcopy.segments.front()}}});
   SP<type_t> left = sym ? sym->type : nullptr;
   pcopy.segments.erase(pcopy.segments.begin());
 
   if (left) { // UFCS
-    path_t ufcs = pcopy;
+    specialized_path_t ufcs = pcopy;
     ufcs.segments.insert(ufcs.segments.begin(), left->name.segments.begin(), left->name.segments.end());
 
     // Might be a template..
-    if (ufcs.has_generic()) {
+    if (ufcs.is_simple()) {
       auto candidates = scope().candidates(ufcs);
       if (candidates.size() > 0) {
         return monomorphize(candidates.front(), ufcs);
@@ -668,7 +606,7 @@ A::satisfies_contract(QT type, QT contract_type) {
     if (req_type->kind == type_kind_t::eFunction) {
       auto contract_fn = req_type->as.function;
 
-      auto sym = scope().resolve({{{to_string(type->name)}, {req_name}}});
+      auto sym = scope().resolve(specialized_path_t ({{to_string(type->name), {}}, {req_name, {}}}));
       if (!sym) {
         std::cerr << to_string(type) << " does not implement " << req_name << "\n";
         return false;
@@ -676,7 +614,7 @@ A::satisfies_contract(QT type, QT contract_type) {
 
       // The symbol type has to be the same kind as the contract member type.
       if (sym->type->kind != type_kind_t::eFunction) {
-        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("`{}` does not implement the contract function `{}` (got {}, expected {})", to_string(sym->name), req_name, to_string(sym->type), to_string(req_type))));
+        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("`{}` does not implement the contract function `{}` (got {}, expected {})", sym->name, req_name, to_string(sym->type), to_string(req_type))));
         return false;
       }
 
@@ -684,7 +622,7 @@ A::satisfies_contract(QT type, QT contract_type) {
 
       // Parameter count mismatch breaks contracts.
       if (symbol_fn->arg_types.size() != contract_fn->arg_types.size()) {
-        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}` (got {}, expected {})", to_string(sym->name), req_name, to_string(sym->type), to_string(req_type))));
+        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}` (got {}, expected {})", sym->name, req_name, to_string(sym->type), to_string(req_type))));
         return false;
       }
 
@@ -694,14 +632,14 @@ A::satisfies_contract(QT type, QT contract_type) {
 
         // Type mismatches in the argument list breaks contract.
         if (contract_fn_param != symbol_fn_param) {
-          diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}` (got {}, expected {})", to_string(sym->name), req_name, to_string(sym->type), to_string(req_type))));
+          diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}` (got {}, expected {})", sym->name, req_name, to_string(sym->type), to_string(req_type))));
           return false;
         }
       }
 
       if ((symbol_fn->receiver.get() != nullptr) !=
           (contract_fn->receiver.get() != nullptr)) {
-        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}`, receiver present on one, but not the other..", to_string(sym->name), req_name)));
+        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}`, receiver present on one, but not the other..", sym->name, req_name)));
         return false;
       }
     } else {
@@ -784,6 +722,10 @@ A::is_cast_convertible(QT from, QT into) {
     return satisfies_contract(from, into);
   }
 
+  if ((into->kind == type_kind_t::eInt || into->kind == type_kind_t::eUint) &&
+      (from->kind == type_kind_t::eInt || from->kind == type_kind_t::eUint))
+    return true;
+
   return false;
 }
 
@@ -837,11 +779,11 @@ A::analyze_binop(N node) {
   return resolve_binop_result_type(expr->op, left, right);
 }
 
-QT A::resolve_receiver(std::optional<path_t> path_opt) {
+QT A::resolve_receiver(std::optional<specialized_path_t> path_opt) {
   if (!path_opt) return nullptr;
 
   // Pop last slice of path
-  path_t path = *path_opt;
+  specialized_path_t path = *path_opt;
   if (path.segments.size() <= 1) return nullptr;
 
   path.segments.pop_back();
@@ -892,29 +834,21 @@ A::analyze_nil(N node) {
 }
 
 QT
-A::monomorphize(SP<binding_decl_t> template_, path_t instantiation) {
+A::monomorphize(SP<template_decl_t> template_, specialized_path_t instantiation) {
   push_scope();
 
-  auto path_size = instantiation.segments.size();
-  for (auto i = 0; i < path_size; ++i) {
-    auto& template_path = template_->name.segments[i];
-    auto& instantiation_path = instantiation.segments[i];
+  auto old_binding = current_binding;
+  current_binding = resolve_path(instantiation);
 
-    for (auto j = 0; j < template_path.generic_args.size(); ++j) {
-      // Get the abstract placeholder (e.g., 'T')
-      auto template_ty = resolve_type(template_path.generic_args[j].binding->name);
-      // Get the concrete type (e.g., 'i32')
-      auto concrete_ty = resolve_type(*instantiation_path.generic_args[j].binding);
+  // Bind the types from `instantiation`
+  for (int i = 0; i < template_->name.params(); i++) {
+    auto template_binding = template_->name.param(i);
+    auto type = instantiation.param(i);
 
-      // 1. Add to scope for the analyzer to use
-      scope().types.add_template_alias(template_path.generic_args[j].binding->name, concrete_ty);
-    }
+    scope().types.add_template_alias(template_binding.binding, resolve_type(*type));
   }
 
-  auto old_binding = current_binding;
-  current_binding = resolve_template_instantiation(instantiation);
-
-  // Analyze the body (returns a type involving 'T')
+  // // Analyze the body (returns a type involving 'T')
   QT abstract_type = analyze_node(template_->value);
 
   pop_scope();
@@ -957,6 +891,7 @@ A::analyze_node(N node) {
   QT type {};
 
   switch (node->kind) {
+  case ast_node_t::eTemplate:
   case ast_node_t::eBinding:
     type = analyze_binding(node);
     break;

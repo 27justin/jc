@@ -15,7 +15,6 @@ add_executable(jcc
 
   src/backend/analyzer.cpp
   src/backend/type_registry.cpp
-  src/backend/template_registry.cpp
   src/backend/scope.cpp
   src/backend/type.cpp
   #src/backend/codegen.cpp

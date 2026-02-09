@@ -16,7 +16,7 @@ enum class symbol_state_t {
 };
 
 struct symbol_t {
-  path_t name;
+  std::string name;
   SP<type_t> type;
   bool is_mutable;
 };

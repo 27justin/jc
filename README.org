@@ -5,7 +5,7 @@ Statically compiled programming language.
 # Example
 
 #+BEGIN_SRC px
-// Contracts define what a type has to be.
+// Contracts define what a type has to have.
 // Any type that matches a contract, can be coerced into it.
 locatable := contract {
   lat: f64

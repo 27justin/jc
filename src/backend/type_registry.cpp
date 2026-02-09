@@ -8,25 +8,25 @@
 type_registry_t::type_registry_t(type_registry_t *parent_)
   : parent(parent_) {
   if (parent == nullptr) {
-    add_builtin({{{"void"}}}, 0, 0, type_kind_t::eVoid);
+    add_builtin({"void"}, 0, 0, type_kind_t::eVoid);
 
     // Only allowed as pointer
-    add_builtin({{{"any"}}}, 0, 0, type_kind_t::eVoid);
+    add_builtin({"any"}, 0, 0, type_kind_t::eVoid);
 
     // Integers
-    add_builtin({{{"i8"}}}, 1 * 8, 1, type_kind_t::eInt);
-    add_builtin({{{"u8"}}}, 1 * 8, 1, type_kind_t::eUint);
+    add_builtin({"i8"}, 1 * 8, 1, type_kind_t::eInt);
+    add_builtin({"u8"}, 1 * 8, 1, type_kind_t::eUint);
 
-    add_builtin({{{"i16"}}}, 2 * 8, 2, type_kind_t::eInt);
-    add_builtin({{{"u16"}}}, 2 * 8, 2, type_kind_t::eUint);
+    add_builtin({"i16"}, 2 * 8, 2, type_kind_t::eInt);
+    add_builtin({"u16"}, 2 * 8, 2, type_kind_t::eUint);
 
-    add_builtin({{{"i32"}}}, 4 * 8, 4, type_kind_t::eInt);
-    add_builtin({{{"u32"}}}, 4 * 8, 4, type_kind_t::eUint);
-    add_builtin({{{"i64"}}}, 8 * 8, 8, type_kind_t::eInt);
-    add_builtin({{{"u64"}}}, 8 * 8, 8, type_kind_t::eUint);
-    add_builtin({{{"f32"}}}, 4 * 8, 4, type_kind_t::eFloat);
-    add_builtin({{{"f64"}}}, 8 * 8, 8, type_kind_t::eFloat);
-    add_builtin({{{"bool"}}}, 1, 1, type_kind_t::eBool);
+    add_builtin({"i32"}, 4 * 8, 4, type_kind_t::eInt);
+    add_builtin({"u32"}, 4 * 8, 4, type_kind_t::eUint);
+    add_builtin({"i64"}, 8 * 8, 8, type_kind_t::eInt);
+    add_builtin({"u64"}, 8 * 8, 8, type_kind_t::eUint);
+    add_builtin({"f32"}, 4 * 8, 4, type_kind_t::eFloat);
+    add_builtin({"f64"}, 8 * 8, 8, type_kind_t::eFloat);
+    add_builtin({"bool"}, 1, 1, type_kind_t::eBool);
   }
 }
 
@@ -46,12 +46,12 @@ SP<type_t> type_registry_t::resolve(const std::string &name) {
   return nullptr;
 }
 
-SP<type_t> type_registry_t::resolve(const path_t &path) {
+SP<type_t> type_registry_t::resolve(const specialized_path_t &path) {
   std::string name = to_string(path);
   return resolve(name);
 }
 
-SP<type_t> type_registry_t::add_builtin(const path_t &name,
+SP<type_t> type_registry_t::add_builtin(const specialized_path_t &name,
                                         size_t size,
                                         size_t alignment,
                                         type_kind_t kind) {
@@ -97,7 +97,7 @@ SP<type_t> type_registry_t::add_function(
   }
 
   // Set the name
-  t->name = {{{ss.str()}}};
+  t->name = ss.str();
 
   // Use zero size for type, this can't be allocated anyhow
   t->size = 0;
@@ -107,7 +107,7 @@ SP<type_t> type_registry_t::add_function(
   return t;
 }
 
-SP<type_t> type_registry_t::add_struct(const path_t &name,
+SP<type_t> type_registry_t::add_struct(const specialized_path_t &name,
                                        struct_layout_t layout) {
   auto type = std::make_shared<type_t>();
   type->size = layout.size;
@@ -122,7 +122,7 @@ SP<type_t> type_registry_t::add_struct(const path_t &name,
 }
 
 SP<type_t>
-type_registry_t::add_contract(const path_t &name, const std::map<std::string, SP<type_t>> &requirements) {
+type_registry_t::add_contract(const specialized_path_t &name, const std::map<std::string, SP<type_t>> &requirements) {
   auto type = std::make_shared<type_t>();
   type->size = (1 + requirements.size() * sizeof(void*)) * 8;
   type->alignment = 8;
@@ -135,7 +135,7 @@ type_registry_t::add_contract(const path_t &name, const std::map<std::string, SP
   return type;
 }
 
-SP<type_t> type_registry_t::add_alias(const path_t &name,
+SP<type_t> type_registry_t::add_alias(const specialized_path_t &name,
                                       SP<type_t> alias,
                                       bool is_distinct) {
   auto type = std::make_shared<type_t>();
@@ -153,7 +153,7 @@ SP<type_t> type_registry_t::add_alias(const path_t &name,
   return type;
 }
 
-SP<type_t> type_registry_t::add_template_alias(const path_t &name,
+SP<type_t> type_registry_t::add_template_alias(const specialized_path_t &name,
                                       SP<type_t> alias) {
   auto type = std::make_shared<type_t>();
   type->size = size_of(alias);
@@ -219,7 +219,7 @@ type_registry_t::slice_of(SP<type_t> base,
   return type;
 }
 
-SP<type_t> type_registry_t::self_placeholder(const path_t& owner_name) {
+SP<type_t> type_registry_t::self_placeholder(const specialized_path_t& owner_name) {
   auto t = std::make_shared<type_t>();
   t->kind = eSelf;
   t->name = owner_name;

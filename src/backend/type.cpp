@@ -12,7 +12,7 @@ bool type_t::operator==(const type_t &other) const {
       return true;
   }
 
-  return other.name == name &&
+  return to_string(other.name) == to_string(name) &&
     other.kind == kind &&
     other.size == size &&
     other.alignment == alignment;
@@ -130,6 +130,7 @@ pointer_t::deref() const {
     indirections.erase(indirections.begin());
 
     auto type = std::make_shared<type_t>();
+    type->name = base->name;
     type->kind = type_kind_t::ePointer;
     type->size = sizeof(void*);
     type->alignment = sizeof(void*);

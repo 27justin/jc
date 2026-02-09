@@ -4,6 +4,7 @@
 #include "frontend/diagnostic.hpp"
 #include "frontend/parser.hpp"
 
+#include "frontend/path.hpp"
 #include "frontend/source.hpp"
 #include "type.hpp"
 #include "symbol.hpp"
@@ -51,7 +52,7 @@ private:
   using QT = SP<type_t>;
   using N = SP<ast_node_t>;
 
-  std::optional<path_t> current_binding;
+  std::optional<specialized_path_t> current_binding;
 
   bool is_rvalue(N);
   bool is_lvalue(N);
@@ -82,9 +83,6 @@ private:
   QT analyze_if(N);
   QT analyze_assignment(N);
 
-  bool is_template_instantiation(const path_t &);
-  bool is_template_declaration(const path_t &);
-
   bool is_static_dispatch(N);
   bool is_dynamic_dispatch(N);
 
@@ -94,18 +92,19 @@ private:
 
   void import_source_file(const std::string &);
 
-  QT resolve_receiver(std::optional<path_t>);
+  QT resolve_receiver(std::optional<specialized_path_t>);
   QT resolve_member_access(QT left, const std::string &member_name);
 
   QT resolve_binop_result_type(binop_type_t, QT left, QT right);
 
   value_category_t resolve_value_category(N node);
 
-  path_t resolve_template_instantiation(const path_t&);
-  QT monomorphize(SP<binding_decl_t> template_, path_t instantiation);
+  QT monomorphize(SP<template_decl_t> template_, specialized_path_t instantiation);
 
   /// Resolve a type via the type registry, potentially monomorphing templates if type is templated.
   QT resolve_type(const type_decl_t &);
-  QT resolve_type(const path_t &);
+  QT resolve_type(const specialized_path_t &);
   QT resolve_type(const std::string &);
+
+  specialized_path_t resolve_path(const specialized_path_t&);
 };

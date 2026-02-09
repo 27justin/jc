@@ -77,7 +77,7 @@ struct rvalue_reference_t {
 enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool, eArray, eSlice, eContract, eSelf, eRValueReference };
 struct type_t {
   type_kind_t kind;
-  path_t name;
+  specialized_path_t name;
 
   size_t size, alignment; //< Alignment in bytes, size in bits.
 

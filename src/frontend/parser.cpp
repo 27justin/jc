@@ -40,8 +40,8 @@ std::pair<int, int> get_binding_power(TT type) {
   case TT::operatorXor:         return {20, 21};
   case TT::keywordAs:           return {80, 81};
   case TT::operatorDeref:       return {99, 100};
-  case TT::delimiterLBrace:     return {31, 0}; // Struct initialization
-  default:                      return {0, 0};
+  case TT::delimiterLBrace:     return {100, 0}; // Struct initialization
+  default:                      return {-1, -1};
   }
 }
 
@@ -135,38 +135,81 @@ bool P::peek(TT ty) {
 }
 
 void
-P::parse_generic_specifier(path_element_t &segment) {
-  expect(TT::delimiterLAngle);
+P::parse_generic_specifier(template_segment_t &segment) {
+  std::vector<generic_t> generics {};
   do {
     generic_t generic;
-    generic.binding = make_shared<type_decl_t>(parse_type());
+    expect(TT::identifier);
+    generic.binding = source->string(token.location);
 
     if (maybe(TT::operatorColon)) {
       // Specifier
-      generic.constraints.push_back(parse_path());
+      generic.constraints.push_back(parse_specialized_path());
     }
-
-    segment.generic_args.push_back(generic);
+    generics.push_back(generic);
   } while (maybe(TT::operatorComma));
-  expect(TT::delimiterRAngle);
+
+  segment.bindings.insert(segment.bindings.begin(), generics.begin(), generics.end());
 }
 
-path_t
-P::parse_path() {
-  path_t path;
+template_path_t
+P::parse_template_path() {
+  template_path_t path;
   while (is_keyword(lexer.peek().type) || is_identifier(lexer.peek().type)) {
     token = lexer.next();
-    path_element_t segment;
+    template_segment_t segment;
 
     segment.name = source->string(token.location);
-    if (peek(TT::delimiterLAngle)) {
-      parse_generic_specifier(segment);
+    try {
+      lexer.push();
+      if (maybe(TT::delimiterLAngle)) {
+        expect(TT::operatorAt); // Placeholder token
+        parse_generic_specifier(segment);
+        expect(TT::delimiterRAngle);
+      }
+
+      path.segments.push_back(segment);
+      lexer.commit();
+
+      if (!maybe(TT::operatorDot)) {
+        return path;
+      }
+    } catch (...) {
+      diagnostics.messages.pop_back();
+      path.segments.push_back(segment);
+      lexer.pop();
+      return path;
     }
+  }
+  return path;
+}
 
-    path.segments.push_back(segment);
+specialized_path_t
+P::parse_specialized_path() {
+  specialized_path_t path;
+  while (is_keyword(lexer.peek().type) || is_identifier(lexer.peek().type)) {
+    token = lexer.next();
+    specialized_segment_t segment {};
 
-    if (!maybe(TT::operatorDot)) {
-      break;
+    segment.name = source->string(token.location);
+    try {
+      lexer.push();
+      if (maybe(TT::delimiterLAngle)) {
+        segment.types.push_back(std::make_shared<type_decl_t>(parse_type()));
+        expect(TT::delimiterRAngle);
+      }
+
+      path.segments.push_back(segment);
+      lexer.commit();
+
+      if (!maybe(TT::operatorDot)) {
+        return path;
+      }
+    } catch (...) {
+      diagnostics.messages.pop_back();
+      path.segments.push_back(segment);
+      lexer.pop();
+      return path;
     }
   }
   return path;
@@ -185,7 +228,7 @@ P::parse_type() {
     if (maybe(TT::literalInt)) { // Compile-time stack array
       decl.len = make_node<literal_expr_t>(ast_node_t::eLiteral, {.value = source->string(token.location), .type = literal_type_t::eInteger}, token.location, source);
     } else if (peek(TT::identifier)){
-      decl.len = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = parse_path()}, token.location, source);
+      decl.len = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = parse_specialized_path()}, token.location, source);
     } else {
       decl.is_slice = true;
     }
@@ -196,7 +239,7 @@ P::parse_type() {
     decl.indirections.push_back(token.type == TT::operatorExclamation ? pointer_kind_t::eNonNullable : pointer_kind_t::eNullable);
   }
 
-  decl.name = parse_path();
+  decl.name = parse_specialized_path();
   return decl;
 }
 
@@ -236,11 +279,10 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
   while (true) {
     auto next = lexer.peek();
 
+    auto [left_binding, right_binding] = get_binding_power(next.type);
+
     // Stop if it's not an operator/call/brace
-    bool is_postfix_or_infix = is_operator(next.type) ||
-                               next.type == TT::delimiterLParen ||
-                               next.type == TT::delimiterLBrace ||
-                               next.type == TT::keywordAs;
+    bool is_postfix_or_infix = std::max(left_binding, right_binding) > -1;
     if (!is_postfix_or_infix) break;
 
     // Check for struct literals
@@ -248,7 +290,6 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
       break;
     }
 
-    auto [left_binding, right_binding] = get_binding_power(next.type);
     if (left_binding <= min_binding_power)
       break;
 
@@ -304,6 +345,17 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
       break;
     }
 
+    case TT::delimiterLBracket: {
+      // Array Access
+      expect(TT::delimiterLBracket);
+      left = make_node<array_access_expr_t>(ast_node_t::eArrayAccess, {
+          .value = left,
+          .offset = parse_expression(0, allow_struct_literal)
+        }, {start, token.location.end}, source);
+      expect(TT::delimiterRBracket);
+      break;
+    }
+
     default: {
       token = lexer.next();
       // Standard Binary Operator
@@ -330,7 +382,7 @@ P::parse_primary(bool allow_struct_literal) {
     return make_node<move_expr_t>(ast_node_t::eMove, {parse_primary(allow_struct_literal)}, token.location, source);
   case TT::keywordSelf:
   case TT::identifier:
-    primary = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = parse_path()}, token.location, source);
+    primary = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = parse_specialized_path()}, token.location, source);
     return primary;
   case TT::literalInt:
     expect(TT::literalInt);
@@ -567,7 +619,7 @@ P::parse_function() {
   if (maybe(TT::operatorArrow)) {
     decl.return_type = parse_type();
   } else {
-    decl.return_type.name = {{{"void"}}};
+    decl.return_type.name = {"void"};
   }
 
   // Body vs Declaration
@@ -720,11 +772,12 @@ SP<ast_node_t>
 P::parse_runtime_binding() {
   declaration_t decl;
 
-  auto location = token.location;
   if (maybe(TT::keywordVar))
     decl.is_mutable = true;
   else if (maybe(TT::keywordLet))
     decl.is_mutable = false;
+
+  auto location = token.location;
 
   expect(TT::identifier);
   location.end = token.location.end;
@@ -744,29 +797,150 @@ P::parse_runtime_binding() {
   return make_node<declaration_t>(ast_node_t::eDeclaration, decl, location, source);
 }
 
+bool
+P::is_simple_path() {
+  if (is_templated_path()) return false;
+  if (is_specialized_path()) return false;
+
+  auto token = this->token;
+  lexer.push();
+
+  bool match = true;
+  while(maybe(TT::identifier)) {
+    if (maybe(TT::operatorDot))
+      continue;
+    else
+      break;
+  }
+
+  lexer.pop();
+  this->token = token;
+  return true;
+}
+
+bool
+P::is_specialized_path() {
+  auto token = this->token;
+  lexer.push();
+
+  // A specialized path is a path which is templated, but has no generics.
+  // E.g. `std.vector<@T>` is not a specialized path
+  //      `std.vector<bool>`, however is.
+
+  bool match = false;
+  while(maybe(TT::identifier)) {
+    if (maybe(TT::delimiterLAngle)) {
+      match = true;
+
+      if (maybe(TT::operatorAt)) {
+        // Placeholders directly violate our specialization
+        // requirement
+        match = false;
+        break;
+      }
+
+      parse_type();
+      expect(TT::delimiterRAngle);
+    }
+
+    if (maybe(TT::operatorDot))
+      continue;
+    else
+      break;
+  }
+
+  lexer.pop();
+  this->token = token;
+  return match;
+}
+
+bool
+P::is_templated_path() {
+  auto token = this->token;
+  lexer.push();
+
+  // A specialized path is a path which is templated, but has no generics.
+  // E.g. `std.vector<@T>` is not a specialized path
+  //      `std.vector<bool>`, however is.
+
+  bool match = false;
+  while(maybe(TT::identifier)) {
+    if (maybe(TT::delimiterLAngle)) {
+      match = true;
+
+      if (!maybe(TT::operatorAt)) {
+        // Placeholders directly violate our specialization
+        // requirement
+        match = false;
+        break;
+      }
+
+      template_segment_t segment {};
+      parse_generic_specifier(segment);
+
+      expect(TT::delimiterRAngle);
+    }
+
+    if (maybe(TT::operatorDot))
+      continue;
+    else
+      break;
+  }
+
+  lexer.pop();
+  this->token = token;
+  return match;
+}
+
 SP<ast_node_t>
 P::parse_identifier() {
   peek_any({TT::identifier});
-  auto path = parse_path();
 
-  if (maybe(TT::operatorBind)) {
-    return make_node<binding_decl_t>(ast_node_t::eBinding, {path, parse_binding()}, token.location, source);
-  }
+  // <path> : <type>? = ...
+  // Path here might either be:
+  //  A. Specialized (e.g. std.vector<bool>)
+  //  B. Simple (e.g. i32.ok)
+  //  C. Templated (e.g. std.vector<@T>)
 
-  if (maybe(TT::operatorColon)) {
-    auto type = parse_type();
-    if (maybe(TT::operatorEqual))
-      return make_node<binding_decl_t>(ast_node_t::eBinding, {path, parse_binding(), type}, token.location, source);
+  bool is_template = is_templated_path();
+  bool is_simple = is_simple_path();
+  bool is_specialized = is_specialized_path();
 
-    return make_node<binding_decl_t>(ast_node_t::eBinding, {path, nullptr, type}, token.location, source);
+  if (is_simple || is_specialized) {
+    auto path = parse_specialized_path();
+    if (maybe(TT::operatorBind)) {
+      return make_node<binding_decl_t>(ast_node_t::eBinding, {path, parse_binding()}, token.location, source);
+    }
+
+    if (maybe(TT::operatorColon)) {
+      auto type = parse_type();
+      if (maybe(TT::operatorEqual))
+        return make_node<binding_decl_t>(ast_node_t::eBinding, {path, parse_binding(), type}, token.location, source);
+
+      return make_node<binding_decl_t>(ast_node_t::eBinding, {path, nullptr, type}, token.location, source);
+    }
+  } else {
+    auto path = parse_template_path();
+
+    if (maybe(TT::operatorBind)) {
+      return make_node<template_decl_t>(ast_node_t::eTemplate, {path, parse_binding()}, token.location, source);
+    }
+
+    if (maybe(TT::operatorColon)) {
+      auto type = parse_type();
+      if (maybe(TT::operatorEqual))
+        return make_node<template_decl_t>(ast_node_t::eTemplate, {path, parse_binding(), type}, token.location, source);
+
+      return make_node<template_decl_t>(ast_node_t::eTemplate, {path, nullptr, type}, token.location, source);
+    }
   }
   return nullptr;
 }
 
-path_t
+specialized_path_t
 P::parse_import() {
   expect(TT::keywordImport);
-  return parse_path();
+  return parse_specialized_path();
 }
 
 translation_unit_t

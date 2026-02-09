@@ -55,6 +55,7 @@ struct cast_expr_t;
 struct deref_expr_t;
 struct attribute_decl_t;
 struct binding_decl_t;
+struct template_decl_t;
 struct struct_expr_t; // Struct initialization
 struct struct_member_t;
 struct range_expr_t;
@@ -62,6 +63,7 @@ struct contract_decl_t;
 struct defer_expr_t;
 struct move_expr_t;
 struct assign_expr_t;
+struct array_access_expr_t;
 
 struct member_access_expr_t;
 
@@ -71,7 +73,7 @@ struct ast_node_t {
   ~ast_node_t();
   void reset();
 
-  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor, eWhile, eBinding, eStructExpr, eRangeExpr, eContract, eDefer, eMove } kind;
+  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor, eWhile, eBinding, eStructExpr, eRangeExpr, eContract, eDefer, eMove, eTemplate, eArrayAccess } kind;
   struct {
     union {
       type_decl_t *type;
@@ -99,6 +101,7 @@ struct ast_node_t {
       for_stmt_t *for_stmt;
       while_stmt_t *while_stmt;
       binding_decl_t *binding_decl;
+      template_decl_t *template_decl;
       struct_expr_t *struct_expr;
       range_expr_t *range_expr;
       contract_decl_t *contract_decl;
@@ -114,7 +117,7 @@ struct ast_node_t {
 
 struct type_decl_t {
   // !u8
-  path_t name; //< u8
+  specialized_path_t name; //< u8
   std::vector<pointer_kind_t> indirections;
   bool is_mutable; //< is_mutable = var !/?, only applicable to pointers & slices
 
@@ -152,7 +155,7 @@ struct symbol_expr_t {
   // std.io.print("...")
 
   //std::string identifier; //< print/variable
-  path_t path;
+  specialized_path_t path;
 };
 
 struct struct_decl_t {
@@ -172,7 +175,13 @@ struct function_decl_t {
 };
 
 struct binding_decl_t {
-  path_t name;
+  specialized_path_t name;
+  SP<ast_node_t> value;
+  std::optional<type_decl_t> type;
+};
+
+struct template_decl_t {
+  template_path_t name;
   SP<ast_node_t> value;
   std::optional<type_decl_t> type;
 };
@@ -290,6 +299,11 @@ struct defer_expr_t {
 
 struct move_expr_t {
   SP<ast_node_t> symbol;
+};
+
+struct array_access_expr_t {
+  SP<ast_node_t> value;
+  SP<ast_node_t> offset;
 };
 
 std::string to_string(const type_decl_t &);

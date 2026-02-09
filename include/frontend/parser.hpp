@@ -12,7 +12,7 @@
 struct translation_unit_t {
   std::shared_ptr<source_t> source;
   std::vector<SP<ast_node_t>> declarations;
-  std::vector<path_t> imports;
+  std::vector<specialized_path_t> imports;
 };
 
 struct parse_error_t {
@@ -46,7 +46,9 @@ private:
   bool peek(token_type_t);
   token_type_t peek_any(std::vector<token_type_t>);
 
-  path_t parse_path();
+  specialized_path_t parse_specialized_path();
+  template_path_t parse_template_path();
+
   type_decl_t parse_type();
 
   SP<ast_node_t> parse_struct();
@@ -70,12 +72,16 @@ private:
   SP<ast_node_t> parse_for();
   SP<ast_node_t> parse_defer();
 
-  path_t parse_import();
+  specialized_path_t parse_import();
+
+  bool is_simple_path();
+  bool is_templated_path();
+  bool is_specialized_path();
 
   std::vector<SP<ast_node_t>> parse_function_arguments();
   struct_expr_t parse_struct_intialization();
 
-  void parse_generic_specifier(path_element_t &path);
+  void parse_generic_specifier(template_segment_t &segment);
 
   binop_type_t binop_type(const token_t &);
 };
