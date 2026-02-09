@@ -6,6 +6,18 @@ bool type_t::is_numeric() const {
   return kind == eInt || kind == eUint || kind == eFloat;
 }
 
+bool type_t::operator==(const type_t &other) const {
+  if (other.kind == type_kind_t::eAlias) {
+    if (*other.as.alias->alias == *this)
+      return true;
+  }
+
+  return other.name == name &&
+    other.kind == kind &&
+    other.size == size &&
+    other.alignment == alignment;
+}
+
 void
 struct_layout_t::compute_memory_layout() {
   size_t current_offset = 0;
@@ -94,8 +106,15 @@ std::string to_string(const type_t &type) {
     ss << "[]" << to_string(arr->element_type);
     break;
   }
+  case type_kind_t::eRValueReference: {
+    ss << "^" << to_string(*type.as.rvalue->base);
+    break;
+  }
+  case type_kind_t::eAlias: {
+    return to_string(type.as.alias->alias);
+  }
   default:
-    ss << type.name;
+    ss << to_string(type.name);
     break;
   }
   return ss.str();

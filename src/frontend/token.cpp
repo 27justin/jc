@@ -31,8 +31,6 @@ const char *to_text(token_type_t ty) {
     return "static";
   case tt::keywordType:
     return "type";
-  case tt::keywordExtern:
-    return "extern";
   case tt::keywordLet:
     return "let";
   case tt::keywordVar:
@@ -45,6 +43,20 @@ const char *to_text(token_type_t ty) {
     return "distinct";
   case tt::keywordNil:
     return "nil";
+  case tt::keywordZero:
+    return "zero";
+  case tt::keywordUninitialized:
+    return "uninitialized";
+  case tt::keywordDefer:
+    return "defer";
+  case tt::keywordMove:
+    return "move";
+  case tt::keywordContract:
+    return "contract";
+  case tt::keywordAs:
+    return "as";
+  case tt::keywordImport:
+    return "import";
 
   case tt::literalString:
     return "string literal";
@@ -103,12 +115,18 @@ const char *to_text(token_type_t ty) {
     return "~";
   case tt::operatorDot:
     return ".";
-  case tt::operatorAs:
+  case tt::operatorArrow:
     return "->";
   case tt::operatorLTE:
     return "<=";
   case tt::operatorGTE:
     return ">=";
+  case tt::operatorCaret:
+    return "^";
+  case tt::operatorBind:
+    return ":=";
+  case tt::operatorDeref:
+    return ".*";
 
   case tt::delimiterLParen:
     return "(";
@@ -162,9 +180,12 @@ bool is_operator(token_type_t ty) {
   case T::operatorQuestion:
   case T::operatorDollar:
   case T::operatorTilde:
-  case T::operatorAs:
+  case T::operatorArrow:
   case T::operatorLTE:
   case T::operatorGTE:
+  case T::operatorCaret:
+  case T::operatorBind:
+  case T::operatorDeref:
     return true;
   default:
     return false;
@@ -187,12 +208,19 @@ bool is_keyword(token_type_t ty) {
   case T::keywordStruct:
   case T::keywordStatic:
   case T::keywordType:
-  case T::keywordExtern:
   case T::keywordLet:
   case T::keywordVar:
   case T::keywordSelf:
   case T::keywordElse:
   case T::keywordDistinct:
+  case T::keywordZero:
+  case T::keywordDefer:
+  case T::keywordMove:
+  case T::keywordUninitialized:
+  case T::keywordNil:
+  case T::keywordContract:
+  case T::keywordAs:
+  case T::keywordImport:
     return true;
   default:
     return false;

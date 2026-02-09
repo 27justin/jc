@@ -2,10 +2,24 @@
 #include "frontend/diagnostic.hpp"
 
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <cassert>
 
 #define MIN(a, b) ((a < b) ? (a) : (b))
+
+source_t source_t::from_file(const std::string &path) {
+  std::ifstream stream(path);
+  if (!stream.good()) {
+    throw std::runtime_error {"Failed to open file " + path};
+  }
+
+  std::stringstream ss;
+  ss << stream.rdbuf();
+  return source_t (ss.str(), path);
+}
 
 source_t::source_t(std::string_view view, const std::string &name) : filename(name) {
   start = new char[view.size()];
@@ -28,6 +42,14 @@ source_t::source_t(const char *str, const std::string &name) : filename(name) {
   std::memcpy((void *) start, str, len);
   end = start + len;
   pointer = start;
+}
+
+source_t::source_t(const source_t &other) {
+  start = new char[other.end - other.start];
+  end = start + (other.end - other.start);
+  std::memcpy((void*)start, other.start, other.end - other.start);
+  pointer = start;
+  filename = other.filename;
 }
 
 source_t::~source_t() {

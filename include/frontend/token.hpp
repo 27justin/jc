@@ -27,6 +27,13 @@ enum class token_type_t {
   keywordElse,
   keywordDistinct,
   keywordNil,
+  keywordZero,
+  keywordDefer,
+  keywordMove,
+  keywordUninitialized,
+  keywordContract,
+  keywordAs,
+  keywordImport,
 
   literalString,
   literalInt,
@@ -57,9 +64,12 @@ enum class token_type_t {
   operatorQuestion,
   operatorDollar,
   operatorTilde,
-  operatorAs,
+  operatorArrow,
   operatorLTE, // <=
   operatorGTE, // >=
+  operatorCaret,
+  operatorBind, // :=
+  operatorDeref, // <expression>.*
 
   delimiterLParen,
   delimiterRParen,

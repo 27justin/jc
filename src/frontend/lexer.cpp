@@ -80,19 +80,23 @@ token_type_t keyword(std::string_view kw) {
   if (kw == "struct") return tt::keywordStruct;
   if (kw == "static") return tt::keywordStatic;
   if (kw == "type") return tt::keywordType;
-  if (kw == "extern") return tt::keywordExtern;
   if (kw == "let") return tt::keywordLet;
   if (kw == "var") return tt::keywordVar;
   if (kw == "self") return tt::keywordSelf;
   if (kw == "else") return tt::keywordElse;
   if (kw == "distinct") return tt::keywordDistinct;
   if (kw == "nil") return tt::keywordNil;
+  if (kw == "contract") return tt::keywordContract;
+  if (kw == "as") return tt::keywordAs;
+  if (kw == "defer") return tt::keywordDefer;
+  if (kw == "move") return tt::keywordMove;
+  if (kw == "import") return tt::keywordImport;
 
   return tt::identifier;
 }
 
 bool lexer_t::eof() const {
-  return source.eof();
+  return source->eof();
 }
 
 token_t lexer_t::next() {
@@ -102,9 +106,9 @@ start:
     return token_t {.type = tt::specialEof};
   }
 
-  token.location = {{ source.line(), source.column() }};
+  token.location = {{ source->line(), source->column() }};
   token.type = tt::specialInvalid;
-  char next = source.next();
+  char next = source->next();
   if (is_whitespace(next)) {
     goto start;
   }
@@ -117,61 +121,91 @@ start:
     // Merge certain operators
     switch (op) {
     case tt::operatorEqual:
-      if (source.peek() == '=') {
+      if (source->peek() == '=') {
         token.type = tt::operatorEquality;
-        source.next();
+        source->next();
+        goto next;
       }
     case tt::operatorExclamation:
-      if (source.peek() == '=') {
+      if (source->peek() == '=') {
         token.type = tt::operatorNotEqual;
-        source.next();
+        source->next();
+        goto next;
       }
     case tt::operatorDot:
-      if (source.peek() == '.') {
+      if (source->peek() == '.') {
         token.type = tt::operatorRange;
-        source.next();
+        source->next();
+        goto next;
+      }
+      if (source->peek() == '*') {
+        token.type = tt::operatorDeref;
+        source->next();
+        goto next;
       }
     case tt::operatorDivide:
-      if (source.peek() == '/') {
-        while(!source.eof() && source.next() != '\n');
+      if (source->peek() == '/') { // Single-line comment
+        while(!source->eof() && source->next() != '\n');
+        goto start;
+      }
+      if (source->peek() == '*') { // Multi-line comment
+        source->next(); // Move past '*'
+
+        while (!source->eof()) {
+          if (source->next() == '*') {
+            if (source->peek() == '/') {
+              source->next(); // Consume the '/'
+              goto start;
+            }
+          }
+        }
+
         goto start;
       }
     case tt::operatorAnd:
-      if (source.peek() == '&') {
+      if (source->peek() == '&') {
         token.type = tt::operatorBooleanAnd;
-        source.next();
+        source->next();
+        goto next;
       }
     case tt::operatorPipe:
-      if (source.peek() == '|') {
+      if (source->peek() == '|') {
         token.type = tt::operatorBooleanOr;
-        source.next();
+        source->next();
+        goto next;
       }
     case tt::operatorMinus:
-      if (source.peek() == '>') {
-        token.type = tt::operatorAs;
-        source.next();
+      if (source->peek() == '>') {
+        token.type = tt::operatorArrow;
+        source->next();
+        goto next;
+      }
+    case tt::operatorColon:
+      if (source->peek() == '=') {
+        token.type = tt::operatorBind;
+        source->next();
         goto next;
       }
     default:
       break;
     }
 
-    token.location.end = {source.line(), source.column()};
+    token.location.end = {source->line(), source->column()};
   }
 
   // Identifiers & Keywords
   // ----------------------
   if (is_identifier(next)) {
-    while (!source.eof() && is_identifier_alnum(source.peek())) source.next();
-    token.location.end = {source.line(), source.column()};
+    while (!source->eof() && is_identifier_alnum(source->peek())) source->next();
+    token.location.end = {source->line(), source->column()};
 
-    if (source.string(token.location) == "true" ||
-        source.string(token.location) == "false") {
+    if (source->string(token.location) == "true" ||
+        source->string(token.location) == "false") {
       token.type = tt::literalBool;
       return token;
     }
 
-    token.type = keyword(source.string(token.location));
+    token.type = keyword(source->string(token.location));
     return token;
   }
 
@@ -181,10 +215,10 @@ start:
     token.type = del;
 
     // Special case for < and >
-    auto next = source.peek();
+    auto next = source->peek();
     switch (next) {
     case '=': {
-      source.next();
+      source->next();
       if (del == tt::delimiterLAngle)
         token.type = tt::operatorLTE;
       else if (del == tt::delimiterRAngle)
@@ -200,15 +234,15 @@ start:
   // ---------------
   if (next == '\'' || next == '"') {
     char delimiter = next;
-    token.location.start = {source.line(), source.column()};
+    token.location.start = {source->line(), source->column()};
 
-    while (!source.eof()) {
-      char c = source.next();
+    while (!source->eof()) {
+      char c = source->next();
 
       if (c == '\\') {
-        if (source.eof()) break; // Handle trailing backslash error
+        if (source->eof()) break; // Handle trailing backslash error
 
-        char escape = source.next();
+        char escape = source->next();
         switch (escape) {
         case '\'': continue;
         case '\"': continue;
@@ -221,7 +255,7 @@ start:
     }
 
     token.type = tt::literalString;
-    token.location.end = {source.line(), source.column() - 1};
+    token.location.end = {source->line(), source->column() - 1};
     return token;
   }
 
@@ -231,17 +265,17 @@ start:
     token.type = tt::literalInt;
 
     while (true) {
-      char p = source.peek();
+      char p = source->peek();
       // Allow ' as arbitrary thousands separator
       if (p == '\'') {
-        source.next();
+        source->next();
         continue;
       }
 
       // Check for float
       if (p == '.') {
         // Look ahead, is this '..' (Range) or '.[0-9]' (Float)?
-        char p2 = source.peek(1);
+        char p2 = source->peek(1);
 
         // If we are already a float, or the next char is '.', stop here
         if (token.type == tt::literalFloat || p2 == '.') {
@@ -251,7 +285,7 @@ start:
         // If its a dot followed by a number, its a float decimal
         if (is_number(p2)) {
           token.type = tt::literalFloat;
-          source.next(); // consume '.'
+          source->next(); // consume '.'
           continue;
         } else {
           break; // Just a dot, not a float decimal (e.g. 1.something)
@@ -259,7 +293,7 @@ start:
       }
 
       if (is_number(p)) {
-        source.next();
+        source->next();
         continue;
       }
 
@@ -269,25 +303,29 @@ start:
   }
 
   next:
-  token.location.end = {source.line(), source.column()};
+  token.location.end = {source->line(), source->column()};
   return token;
 }
 
-token_t lexer_t::peek() {
-  source.push();
-  token_t tok = next();
-  source.pop();
+token_t lexer_t::peek(int delta) {
+  source->push();
+  token_t tok;
+  do {
+    tok = next();
+    delta--;
+  } while (delta > 0);
+  source->pop();
   return tok;
 }
 
 void lexer_t::push() {
-  source.push();
+  source->push();
 }
 
 void lexer_t::pop() {
-  source.pop();
+  source->pop();
 }
 
 void lexer_t::commit() {
-  source.commit();
+  source->commit();
 }

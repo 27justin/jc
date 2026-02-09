@@ -3,7 +3,7 @@
 
 diagnostic_t diagnostic(
   diagnostic_level_t level,
-  const source_t &source,
+  std::shared_ptr<source_t> source,
   const std::string &message,
   const std::string &detail,
   const std::string &suggestion,
@@ -19,7 +19,7 @@ diagnostic_t diagnostic(
   };
 }
 
-diagnostic_t warn(const source_t &source,
+diagnostic_t warn(std::shared_ptr<source_t> source,
                   source_location_t loc,
   const std::string &message,
   std::string detail,
@@ -27,7 +27,7 @@ diagnostic_t warn(const source_t &source,
   return diagnostic(diagnostic_level_t::eWarn, source, message, detail, suggestion, loc);
 }
 
-diagnostic_t error(const source_t &source,
+diagnostic_t error(std::shared_ptr<source_t> source,
                    source_location_t loc,
   const std::string &message,
   std::string detail,
@@ -48,7 +48,7 @@ diagnostic_t error(const source_t &source,
 std::string serialize(const diagnostic_t &msg) {
   std::stringstream ss;
 
-  auto offset = msg.origin.start.column + msg.source.name().size() + 2;
+  auto offset = msg.origin.start.column + msg.source->name().size() + 2;
 
   std::string indent = std::string(msg.origin.start.column, ' ');
 
@@ -59,7 +59,7 @@ std::string serialize(const diagnostic_t &msg) {
     return ss.str();
   };
 
-  ss << msg.source.name() << ":" <<msg.origin.start.line << ":" << msg.origin.start.column << ": " ANSI_BOLD;
+  ss << msg.source->name() << ":" <<msg.origin.start.line << ":" << msg.origin.start.column << ": " ANSI_BOLD;
   switch (msg.level) {
   case diagnostic_level_t::eError:
     ss << ANSI_RED << "error:";
@@ -73,7 +73,7 @@ std::string serialize(const diagnostic_t &msg) {
   }
   ss << ANSI_RESET << " " << msg.message << "\n\n";
 
-  auto line = msg.source.line(msg.origin.start.line);
+  auto line = msg.source->line(msg.origin.start.line);
   ss << line.substr(0, msg.origin.start.column);
   ss << "\e[0;91m" << line.substr(msg.origin.start.column, msg.origin.end.column - msg.origin.start.column);
   ss << "\e[0m" << line.substr(msg.origin.end.column) << "\n";

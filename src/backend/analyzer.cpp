@@ -2,30 +2,120 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <filesystem>
 
 #include "backend/analyzer.hpp"
 #include "backend/type.hpp"
 #include "frontend/ast.hpp"
 #include "frontend/diagnostic.hpp"
+#include "frontend/parser.hpp"
 #include "frontend/token.hpp"
 
+using QT = SP<type_t>;
+using N = SP<ast_node_t>;
+using std::make_shared;
+using A = analyzer_t;
+
+std::string
+mangle(const type_decl_t &);
+std::string
+mangle(const path_t &);
+
+std::string
+mangle(const type_decl_t &decl) {
+  std::stringstream ss;
+
+  if (decl.is_slice)
+    ss << "S";
+
+  for (auto &_ : decl.indirections)
+    ss << "P";
+
+  ss << mangle(decl.name);
+  return ss.str();
+}
+
+std::string
+mangle(const path_t &path) {
+  std::stringstream mangled;
+
+  mangled << "_P";
+
+  for (auto &segment : path.segments) {
+    mangled << segment.name.size() << segment.name;
+    if (segment.generic_args.size() > 0) {
+      mangled << "_";
+      for (auto &generic : segment.generic_args) {
+        mangled << mangle(*generic.binding);
+      }
+    }
+  }
+  return mangled.str();
+}
+
+void A::import_source_file(const std::string &path) {
+  auto src = std::make_shared<source_t>(source_t::from_file(path));
+  try {
+    lexer_t lexer(src);
+    parser_t parser(lexer, src);
+    analyzer_t analyzer(src);
+
+    semantic_info_t info = analyzer.analyze(parser.parse());
+    scope_stack.front()->merge(*info.scope);
+  } catch (const analyze_error_t &err) {
+    for (auto &msg : err.diagnostics.messages) {
+      std::cerr << serialize(msg) << "\n";
+    }
+  } catch (const parse_error_t &err) {
+    for (auto &msg : err.diagnostics.messages) {
+      std::cerr << serialize(msg) << "\n";
+    }
+  }
+}
+
 semantic_info_t
-analyzer_t::analyze(translation_unit_t tu) {
+A::analyze(translation_unit_t tu) {
+  push_scope();
   semantic_info_t info {
-    .unit = tu
+    .unit = tu,
+    .scope = scope_stack.front()
   };
 
-  push_scope();
+  // First resolve all imports
+  std::vector<std::string> import_search_paths {"../lib"};
+  for (auto &import_ : info.unit.imports) {
+    bool found = false;
+    for (auto &search_path : import_search_paths) {
+      auto relative_disk_path = to_string(import_);
+      size_t pos = relative_disk_path.find(".");
+      while (pos != std::string::npos) {
+        relative_disk_path.replace(pos, 1, "/");
+        pos = relative_disk_path.find(".");
+      }
+
+      auto absolute_disk_path = search_path + '/' + relative_disk_path + ".px";
+      if (std::filesystem::exists(absolute_disk_path)) {
+        import_source_file(absolute_disk_path);
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Unknown import", "Import " + to_string(import_) + " wasn't found"));
+      throw analyze_error_t {diagnostics};
+    }
+  }
+
+  // Then process our source file
   for (auto &decl : info.unit.declarations) {
     try {
-      resolved_types[decl] = analyze_node(decl);
+      analyze_node(decl);
     } catch (const diagnostic_t &msg) {
       diagnostics.messages.push_back(msg);
     }
   }
   pop_scope();
-
-  info.resolved_types = std::move(resolved_types);
 
   if (diagnostics.messages.size() > 0) {
     throw analyze_error_t {std::move(diagnostics)};
@@ -33,1118 +123,854 @@ analyzer_t::analyze(translation_unit_t tu) {
   return info;
 }
 
-SP<scope_t>
-analyzer_t::push_scope() {
-  SP<scope_t> parent { nullptr };
-  if (scope_stack.size() > 0)
-    parent = scope_stack.back();
-  scope_stack.emplace_back(std::make_shared<scope_t>(parent));
-  return scope_stack.back();
+scope_t &
+A::scope() {
+  return *scope_stack.back();
 }
 
-void analyzer_t::pop_scope() {
+scope_t &
+A::push_scope() {
+  auto scope = std::make_shared<scope_t>(scope_stack.size() > 0 ? scope_stack.back() : nullptr);
+  scope_stack.emplace_back(scope);
+  return *scope;
+}
+
+void
+A::pop_scope() {
   scope_stack.pop_back();
 }
 
-SP<scope_t>
-analyzer_t::get_scope() {
-  return scope_stack.back();
-}
-
-void
-analyzer_t::push_type_infer(SP<type_t> ty) {
-  type_infer_stack.push_back(ty);
-}
-
-void analyzer_t::pop_type_infer() {
-  type_infer_stack.pop_back();
-}
-
-SP<type_t>
-analyzer_t::get_type_infer() {
-  return type_infer_stack.back();
+bool
+A::is_template_instantiation(const path_t &path) {
+  for (auto &segment : path.segments) {
+    for (auto &generic : segment.generic_args) {
+      if (resolve_type(*generic.binding) == nullptr)
+        return false;
+    }
+  }
+  return true;
 }
 
 bool
-analyzer_t::has_type_infer() {
-  return type_infer_stack.size() > 0;
+A::is_template_declaration(const path_t &path) {
+  return !is_template_instantiation(path);
 }
 
-void
-analyzer_t::push_function_frame(SP<type_t> type) {
-  function_stack.emplace_back(type);
-}
+path_t A::resolve_template_instantiation(const path_t &path) {
+  path_t result = path;
 
-void analyzer_t::pop_function_frame() {
-  function_stack.pop_back();
-}
-
-SP<type_t>
-analyzer_t::get_function_frame() {
-  return function_stack.back();
-}
-
-bool
-analyzer_t::has_function_frame() {
-  return !function_stack.empty();
-}
-
-SP<type_t>
-analyzer_t::analyze_literal(SP<ast_node_t> node) {
-  literal_expr_t *expr = node->as.literal_expr;
-
-  SP<type_t> result;
-  switch (expr->type) {
-  case literal_type_t::eString: {
-    // String literals are never mutable.
-    //result = types.pointer_to(types.resolve("u8"), {pointer_kind_t::eNonNullable}, false);
-    result = types.array_of(types.resolve("u8"), expr->value.size());
-    break;
-  }
-  case literal_type_t::eInteger: {
-    result = types.resolve("i32");
-    break;
-  }
-  case literal_type_t::eBool: {
-    result = types.resolve("bool");
-    break;
-  }
-  case literal_type_t::eFloat: {
-    result = types.resolve("f32");
-    break;
-  }
+  for (auto &segment : result.segments) {
+    for (auto &generic : segment.generic_args) {
+      QT type = resolve_type(generic.binding->name);
+      generic.binding = make_shared<type_decl_t>(*generic.binding);
+      generic.binding->name = type->name;
+    }
   }
   return result;
 }
 
-SP<type_t>
-analyzer_t::analyze_function_parameter(SP<ast_node_t> node) {
-  auto param = node->as.fn_param;
-
-  // Otherwise normal binding
-  if (param->type) {
-    auto type = analyze_node(param->type);
-    return type;
-  }
-  return types.resolve("void");
-}
-
-SP<type_t>
-analyzer_t::analyze_function_decl(SP<ast_node_t> node) {
-  auto decl = node->as.fn_decl;
-
-  SP<type_t> return_type{nullptr},
-             receiver {nullptr}; //< Implicitly takes `receiver` as the first argument
-
-  if (decl->type)
-    return_type = analyze_node(decl->type);
-  else
-    // Default to void
-    return_type = types.resolve("void");
-
-  // The function name can be namespaced.  The last element of the
-  // path is the function name, the remainder the type, or namespace.
-
-  string_list path = split(to_string(decl->name), ".");
-  auto function_name = path.back();
-  path.pop_back();
-
-  // With path, we can now check if it is a type.
-  if (receiver = types.resolve(join(path, ".")); receiver) {
-    // It is a type, this is important if the function takes a self
-    // parameters, that is not specified.
-    push_type_infer(receiver);
+QT
+A::resolve_type(const type_decl_t &ty) {
+  // Template declarations have no type.
+  if (is_template_declaration(ty.name)) {
+    return nullptr;
   }
 
-  std::vector<SP<type_t>> parameters;
-
-  auto it = decl->parameters.begin();
-
-  // With the information about `receiver`, we can now check for the
-  // presence of a `self` parameter.
-  if (decl->parameters.size() > 0) {
-    auto &first = (*it)->as.fn_param;
-    if (first->is_self) {
-      if (!first->type) {
-        // This implies that the function takes `receiver` as the first argument
-        if (first->is_self_ref) //< Pass-by-reference
-          parameters.push_back(types.pointer_to(receiver, {pointer_kind_t::eNonNullable}, first->is_mutable));
-        else // Pass-by-value
-          parameters.push_back(receiver);
-      } else {
-        // The receiver is specified, use that.
-        parameters.push_back(analyze_node(first->type));
+  // Difficult case, `ty` might be a template instantiation
+  if (ty.name.has_generic() && is_template_instantiation(ty.name)) {
+    path_t name = resolve_template_instantiation(ty.name);
+    auto candidates = scope().candidates(name);
+    if (candidates.size() > 0) {
+      return monomorphize(candidates.front(), name);
+    }
+  } else {
+    // Simple case, `ty` refers to a fully-qualified type.
+    QT base = scope().types.resolve(ty.name);
+    if (base) {
+      if (ty.indirections.size() > 0) {
+        return scope().types.pointer_to(base, ty.indirections, ty.is_mutable);
       }
-      // Store the type back on the node
-      (*it)->type = parameters.back();
-      // Forward the parameters, since this one is 'hidden'
-      it++;
-    } else {
-      // If we don't have a receiver, this function is static. In that
-      // case, we don't have to bother saving it.
-      receiver = nullptr;
+
+      if (ty.is_slice && ty.len == nullptr) {
+        return scope().types.slice_of(base, ty.is_mutable);
+      }
+
+      if (ty.is_slice && ty.len != nullptr) {
+        if (ty.len->kind == ast_node_t::eLiteral)
+          return scope().types.array_of(base, std::stoll(ty.len->as.literal_expr->value));
+        else
+          return scope().types.slice_of(base, ty.is_mutable);
+      }
+      return base;
     }
   }
 
-  for (; it != decl->parameters.end(); ++it) {
-    auto param = *it;
-    auto ptype = analyze_function_parameter(param);
-    param->type = ptype;
-    parameters.push_back(ptype);
-  }
-
-  if (receiver) {
-    // Remove type from infer stack
-    pop_type_infer();
-  }
-
-  SP<type_t> fn_type = types.add_function(return_type, parameters, receiver, decl->is_var_args);
-  get_scope()->add(to_string(decl->name), fn_type);
-  return fn_type;
+  return nullptr;
 }
 
+QT A::resolve_type(const path_t &path) {
+  type_decl_t decl {
+    .name = path,
+    .indirections = {}, .is_mutable = false, .is_slice = false,
+    .len = nullptr,
+  };
+  return resolve_type(decl);
+}
 
-SP<type_t>
-analyzer_t::analyze_function(SP<ast_node_t> node) {
-  auto impl = node->as.fn_impl;
+QT A::resolve_type(const std::string &name) {
+  type_decl_t decl {
+    .name = {{{name}}},
+    .indirections = {}, .is_mutable = false, .is_slice = false,
+    .len = nullptr,
+  };
+  return resolve_type(decl);
+}
 
-  auto base_type = analyze_node(impl->declaration);
+QT
+A::analyze_function_decl(const function_decl_t &decl, SP<type_t> implicit_receiver) {
+  std::vector<SP<type_t>> params;
 
-  // Push a new scope & function frame, then analyze the block.
-  push_scope();
-  push_function_frame(base_type);
+  SP<type_t> active_receiver {nullptr};
 
-  // Bind our parameters to the scope
-  function_decl_t *header = impl->declaration->as.fn_decl;
-  function_signature_t *signature = base_type->as.function;
-
-  for (auto i = 0; i < signature->arg_types.size(); ++i) {
-    auto param = header->parameters[i];
-    auto fn_param = param->as.fn_param;
-    get_scope()->add(fn_param->name, signature->arg_types[i], fn_param->is_mutable);
+  for (auto &param : decl.parameters) {
+    if (param.is_self) {
+      active_receiver = implicit_receiver;
+      if (param.is_self_ref) {
+        active_receiver = scope().types.pointer_to(active_receiver, {pointer_kind_t::eNonNullable}, param.is_mutable);
+      }
+    } else {
+      params.push_back(resolve_type(param.type));
+      if (param.is_rvalue) {
+        params.back() = scope().types.rvalue_of(params.back());
+      }
+    }
   }
 
-  if (signature->receiver)
-    push_type_infer(signature->receiver);
+  return scope().types.add_function(resolve_type(decl.return_type), params, active_receiver, decl.is_var_args);
+}
 
-  analyze_node(impl->block);
+QT
+A::analyze_function_decl(N node, SP<type_t> implicit_receiver) {
+  function_decl_t *decl = node->as.fn_decl;
+  return analyze_function_decl(*decl, implicit_receiver);
+}
 
-  if (signature->receiver)
-    pop_type_infer();
+QT
+A::analyze_function_impl(N node, SP<type_t> implicit_receiver) {
+  function_impl_t *impl = node->as.fn_impl;
 
-  pop_function_frame();
+  // Push a new scope
+  push_scope();
+
+  // Register parameters
+  for (auto &param : impl->declaration.parameters) {
+    if (param.is_self == false) {
+      scope().add(path_t{{{param.name}}}, resolve_type(param.type), param.is_mutable);
+    } else {
+      auto self = implicit_receiver;
+      if (param.is_self_ref) {
+        self = scope().types.pointer_to(self, {pointer_kind_t::eNonNullable}, param.is_mutable);
+      }
+      scope().add(path_t{{{"self"}}}, implicit_receiver, param.is_mutable);
+    }
+  }
+
+  QT actual_return_type = analyze_node(impl->block);
   pop_scope();
 
-  return base_type;
+  QT expected_return_type = resolve_type(impl->declaration.return_type);
+
+  if (*actual_return_type != *expected_return_type
+      && !is_implicit_convertible(actual_return_type, expected_return_type)) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Type mismatch", fmt("Function is supposed to return `{}`, but block evaluates to `{}`", to_string(expected_return_type), to_string(actual_return_type))));
+    throw analyze_error_t{diagnostics};
+  }
+  return analyze_function_decl(impl->declaration, implicit_receiver);;
 }
 
-SP<type_t>
-analyzer_t::analyze_block(SP<ast_node_t> node) {
-  auto block = node->as.block;
-  for (auto &v : block->body) {
-    analyze_node(v);
-  }
-  // TODO: Implicit return, the last statement in a body should be the
-  // type of body.
-  return types.resolve("void");
-}
+QT
+A::analyze_binding(N node) {
+  binding_decl_t *decl = node->as.binding_decl;
 
-SP<type_t>
-analyzer_t::analyze_struct(SP<ast_node_t> node) {
-  auto decl = node->as.struct_decl;
-
-  // Compute all member & their types, and then compute a memory
-  // layout
-  struct_layout_t layout {};
-
-  for (auto &member : decl->members) {
-    assert(member->kind == ast_node_t::eDeclaration);
-    declaration_t *decl = member->as.declaration;
-    SP<type_t> type = analyze_node(decl->type);
-    layout.members.push_back(struct_layout_t::field_t{
-        .name = decl->identifier,
-        .type = type
-      });
+  if (decl->name.has_generic() && is_template_declaration(decl->name)) {
+    // Monomorphization hits, we can't instantiate this, rather we register this
+    scope().add_template(make_shared<binding_decl_t>(*decl));
+    return nullptr;
   }
 
-  layout.compute_memory_layout();
-
-  // Create new type.
-  return types.add_struct(decl->name, layout);;
-}
-
-SP<type_t>
-analyzer_t::analyze_type(SP<ast_node_t> node) {
-  auto decl = node->as.type;
-
-  auto type = types.resolve(to_string(decl->name));
-  if (!type) {
-    unknown_type_error(node);
-  }
-
-  auto sq = type;
-  if (decl->indirections.size() > 0) {
-    sq = types.pointer_to(sq, decl->indirections, decl->is_mutable);
-  }
-
-  if (decl->len > 0) {
-    sq = types.array_of(sq, decl->len);
-  }
-
-  if (decl->is_slice) {
-    sq = types.slice_of(sq, decl->is_mutable);
-  }
-
-  return sq;
-}
-
-SP<type_t>
-analyzer_t::analyze_declaration(SP<ast_node_t> node) {
-  auto &decl = *node->as.declaration;
-
-  SP<type_t> type;
-  if (decl.type)
-    type = analyze_node(decl.type);
-  // else, we try to infer from the value.
-
-  bool type_infer = false;
-  if (type) {
-    push_type_infer(type); // To infer type of `.` shorthand
-    type_infer = true;
-  }
-
-  if (decl.value) {
-    SP<type_t> val_type = analyze_node(decl.value);
-
-    if (type)
-      decl.value = coerce(decl.value, type);
-
-    // Type not set yet, we infer.
-    if (!type) {
-      type = val_type;
-    } else {
-      // Check for mismatch
-      if (!is_coercible(val_type, type)) {
-        type_error(type, val_type, decl.value);
-      }
+  if (decl->name.has_generic() && is_template_instantiation(decl->name)) {
+    auto candidates = scope().candidates(decl->name);
+    if (candidates.empty()) {
+      diagnostics.messages.emplace_back(error(node->source, node->location, "Invalid template instantiation", "No candidate matches this template."));
+      throw analyze_error_t();
     }
+
+    return analyze_node(candidates.front()->value);
   }
 
-  if (type_infer)
-    pop_type_infer();
+  current_binding = decl->name;
 
-  if (!type) {
-    // Unable to infer type.
-    infer_error(node);
-  } else {
-    // Got a type, check that it's valid.
-    if (type->size == 0 && type->kind != type_kind_t::ePointer) {
-      invalid_type_error(type, node);
-    }
+  QT type = analyze_node(decl->value);
+  if (decl->type) {
+    type = resolve_type(*decl->type);
   }
 
-  get_scope()->add(decl.identifier, type, decl.is_mutable);
+  scope().add(decl->name, type, false);
+  current_binding = std::nullopt;
   return type;
 }
 
-SP<type_t>
-analyzer_t::analyze_return(SP<ast_node_t> node) {
-  return_stmt_t *stmt = node->as.return_stmt;
+QT
+A::analyze_block(N node) {
+  block_node_t *block = node->as.block;
 
-  if (!has_function_frame()) {
-    throw error(source, node->location, INVALID_RETURN_STMT, INVALID_RETURN_STMT_DETAIL);
-    return nullptr;
+  QT last_type {};
+  for (auto &v : block->body) {
+    last_type = analyze_node(v);
   }
 
-  if (stmt->value == nullptr)
-    return types.resolve("void");
-
-  auto expected_type = get_function_frame()->as.function->return_type;
-  auto ret_type = analyze_node(stmt->value);
-
-  if (ret_type != expected_type
-      && !is_coercible(ret_type, expected_type)) {
-    type_error(expected_type, ret_type, stmt->value);
-  }
-
-  return ret_type;
+  return last_type ? last_type : resolve_type("void");
 }
 
-bool analyzer_t::is_coercible(SP<type_t> from,
-                              SP<type_t> into) {
+bool
+A::is_static_dispatch(N node) {
+  call_expr_t *call = node->as.call_expr;
+  assert(call->callee->kind == ast_node_t::eSymbol);
 
-  if (from == into) return true;
-
-  // `any` pointer can be coerced into any other pointer.
-  if (from->name == "any"
-      && from->kind == type_kind_t::ePointer
-      && into->kind == type_kind_t::ePointer) {
-    auto from_ptr = from->as.pointer;
-    auto to_ptr = into->as.pointer;
-
-    auto from_level = from_ptr->indirections.back();
-    auto to_level = to_ptr->indirections.back();
-
-    // !any -> var !u8 <- Not OK, constness lost
-    if (!from_ptr->is_mutable && to_ptr->is_mutable)
-      return false;
-
-
-    // ?any -> !i32 <- Not OK
-    if (from_level == pointer_kind_t::eNullable && to_level == pointer_kind_t::eNonNullable)
-      return false;
-
-    return true;
-  }
-
-  // Any other pointer can also be cast into `any`
-  if (into->name == "any"
-      && into->kind == type_kind_t::ePointer
-      && from->kind == type_kind_t::ePointer) {
-
-    auto from_ptr = from->as.pointer;
-    auto to_ptr = into->as.pointer;
-
-    // !u8 -> var !any <- Not OK, constness lost
-    if (!from_ptr->is_mutable && to_ptr->is_mutable)
-      return false;
-
-    // ?i32 -> !any
-    // Not allowed, breaks nullability.
-    if (from_ptr->indirections.back() == pointer_kind_t::eNullable
-        && to_ptr->indirections.back() == pointer_kind_t::eNonNullable)
-      return false;
-    return true;
-  }
-
-  if (from->kind == type_kind_t::ePointer &&
-      into->kind == type_kind_t::ePointer) {
-
-    auto from_ptr = from->as.pointer;
-    auto to_ptr = into->as.pointer;
-
-    auto from_level = from_ptr->indirections.back();
-    auto to_level = to_ptr->indirections.back();
-
-    // Cast from any concrete type to any other is disallowed
-    if (from_ptr->base != to_ptr->base)
-      return false;
-
-    // ?person -> !person <- Not OK
-    if (from_level == pointer_kind_t::eNullable &&
-        to_level == pointer_kind_t::eNonNullable)
-      return false;
-
-    // !person -> var !any <- Not OK, casts away constness
-    if (from_ptr->is_mutable == false
-        && to_ptr->is_mutable == true)
-      return false;
-
-    return true;
-  }
-
-  // Numbers can be casted based on size
-  if (from->is_numeric() && into->is_numeric()) {
-    // Only upcasting into better bitwidth is supported.
-    return (into->size > from->size) || into->size == from->size;
-  }
-
-  // Pointers can be turned into intptr_t and uintptr_t
-  if (from->kind == type_kind_t::ePointer &&
-      (into->is_numeric() && into->size == sizeof(void *) * 8)) {
-    return true;
-  }
-
-  // Alias types are trivially coercible
-  if (from->kind == type_kind_t::eAlias)
-    return is_coercible(from->as.alias->alias, into);
-
-  if (into->kind == type_kind_t::eAlias)
-    return is_coercible(from, into->as.alias->alias);
-
-  // Arrays can be coerced into slices of the same type.
-  if (into->kind == type_kind_t::eSlice &&
-      from->kind == type_kind_t::eArray &&
-      from->as.array->element_type == into->as.slice->element_type) {
-    return true;
-  }
-
-  // Arrays can be coerced into slices of the same type.
-  if (into->kind == type_kind_t::eSlice &&
-      from->kind == type_kind_t::eSlice &&
-      from->as.slice->element_type == into->as.slice->element_type) {
-    return true;
-  }
-
-  // Slices & Arrays can decay to pointers
-  if ((from->kind == type_kind_t::eArray ||
-       from->kind == type_kind_t::eSlice) &&
-      into->kind == type_kind_t::ePointer)
-    return true;
-
-  return false;
+  return scope().resolve(call->callee->as.symbol->path) != nullptr;
 }
 
-bool analyzer_t::is_castable(SP<type_t> from,
-                             SP<type_t> into) {
-  if (is_coercible(from, into)) {
-    return true;
+value_category_t A::resolve_value_category(N node) {
+  switch (node->kind) {
+  case ast_node_t::eSymbol:       return value_category_t::eLValue;
+  case ast_node_t::eMemberAccess: return value_category_t::eLValue; // x.y
+  case ast_node_t::eMove:         return value_category_t::eRValue; // move x
+  case ast_node_t::eLiteral:      return value_category_t::eRValue; // 5, "hi"
+  case ast_node_t::eCall:         return value_category_t::eRValue; // f()
+  default:                        return value_category_t::eRValue;
+  }
+}
+
+QT
+A::analyze_call(N node) {
+  call_expr_t *call = node->as.call_expr;
+
+  auto fn = analyze_node(call->callee);
+  assert(fn->kind == type_kind_t::eFunction && "Callable is not a function");
+
+  // Check the argument types against the parameters
+  function_signature_t *signature = fn->as.function;
+
+  bool has_receiver = signature->receiver != nullptr;
+
+  int64_t passed_arguments = call->arguments.size(),
+    required_parameters = signature->arg_types.size();
+
+  if (has_receiver) {
+    required_parameters += 1;
   }
 
-  if (from->kind == type_kind_t::eAlias
-      || from->kind == type_kind_t::eOpaque) {
-    // Check if the resolved qualified types are coercible.
-    return is_castable(from->as.alias->alias, into);
+  // `i32.to_string(..)`, implies that the user passes the `self` himself.
+  if (is_static_dispatch(node) && has_receiver) {
+    passed_arguments = call->arguments.size();
+  } else {
+    // Dynamic dispatch (calling from a local symbol), adds a hidden
+    // `self` parameter, if it so requires.
+    if (has_receiver) {
+      passed_arguments += 1;
+    }
   }
 
-  if (into->kind == type_kind_t::eAlias
-      || into->kind == type_kind_t::eOpaque) {
-    // Check if the resolved qualified types are coercible.
-    return is_castable(from, into->as.alias->alias);
+  if (required_parameters != passed_arguments
+      && !(signature->is_var_args && passed_arguments >= required_parameters)) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Mismatched argument count", fmt("Function expects {} arguments, got {}", required_parameters, passed_arguments)));
+    throw analyze_error_t{diagnostics};
   }
 
-  // Integer can be cast into pointers
-  if (into->kind == type_kind_t::ePointer && from->kind == type_kind_t::eUint) {
-    return true;
-  }
+  // Type-match the passed arguments & required parameters
+  for (auto i = 0; i < signature->arg_types.size(); ++i) {
+    auto param = signature->arg_types[i];
+    auto arg_node = call->arguments[i];
+    auto arg_type = analyze_node(arg_node); // Existing call
 
-  // Integers can be truncated
-  if (from->is_numeric() && into->is_numeric())
-    return true;
-
-  // `any` pointers can be casted into any other pointer, if explicit.
-  if (into->kind == type_kind_t::ePointer &&
-      from->kind == type_kind_t::ePointer) {
-
-    auto from_ptr = from->as.pointer;
-    auto to_ptr = into->as.pointer;
-
-    auto from_level = from_ptr->indirections.back();
-    auto to_level = to_ptr->indirections.back();
-
-    if (into->name == "any" || from->name == "any") {
-      return true;
+    // Check RValue requirement (^T)
+    if (param->kind == type_kind_t::eRValueReference) {
+      if (resolve_value_category(arg_node) != value_category_t::eRValue) {
+        diagnostics.messages.push_back(error(arg_node->source, arg_node->location, 
+                                             "Move required", "Cannot pass an lvalue to a move-only parameter (^T). Use 'move'."));
+        throw analyze_error_t{diagnostics};
+      }
     }
 
-    // Pointers of the same base type can be forced to lose/gain
-    // mutability, or nullability.
-    if (from_ptr->base == to_ptr->base)
-      return true;
-
-    return false;
+    if (!is_implicit_convertible(arg_type, param)) {
+      diagnostics.messages.push_back(error(call->arguments[i]->source, call->arguments[i]->location, "Invalid type", fmt("Expected {}, got {} for argument #{}", to_string(param), to_string(arg_type), i)));
+      throw analyze_error_t{diagnostics};
+    }
   }
-  return false;
+
+  return fn->as.function->return_type;
 }
 
-SP<type_t>
-analyzer_t::resolve_primitive_binop(binop_type_t T, SP<type_t> L,
-                                    SP<type_t> R) {
-  if (L->size > R->size) return L;
+QT
+A::analyze_literal(N node) {
+  literal_expr_t *literal = node->as.literal_expr;
 
-  using BT = binop_type_t;
+  switch (literal->type) {
+  case literal_type_t::eString:
+    return scope().types.array_of(resolve_type("u8"), literal->value.size());
+  case literal_type_t::eInteger:
+    return resolve_type("i32");
+  case literal_type_t::eFloat:
+    return resolve_type("f32");
+  case literal_type_t::eBool:
+    return resolve_type("bool");
+  default:
+    assert(false && "Unhandled literal case");
+  }
+}
 
-  switch (T) {
-  case BT::eLT: // <
-  case BT::eGT: // >
-  case BT::eEqual: // ==
-  case BT::eNotEqual: // !=
-  case BT::eAnd: // &&
-  case BT::eOr: // &&
-  case BT::eGTE: // >=
-  case BT::eLTE: // <=
-    return types.resolve("bool");
+QT
+A::analyze_declaration(N node) {
+  declaration_t *decl = node->as.declaration;
+
+  // Resolve annotation once if it exists
+  QT annotated_type = decl->type ? resolve_type(*decl->type) : nullptr;
+
+  // Determine the type of the value
+  QT inferred_type = nullptr;
+  if (decl->value) { // Might just be forward declared, this implies zero initialization
+    inferred_type = analyze_node(decl->value);
+  }
+
+  // Reconcile types
+  QT final_type = nullptr;
+  if (annotated_type && inferred_type) {
+    if (*annotated_type != *inferred_type) {
+      diagnostics.messages.push_back(error(node->source, node->location,
+                                           "Type mismatch",
+                                           fmt("Type annotation holds a different type than the expression. ({} vs {})", to_string(annotated_type), to_string(inferred_type))));
+      throw analyze_error_t {diagnostics};
+    }
+    final_type = annotated_type;
+  } else {
+    // Fallback to whichever is present (or error if neither)
+    final_type = annotated_type ? annotated_type : inferred_type;
+  }
+
+  if (!final_type) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Type error", "Cannot infer type."));
+    throw analyze_error_t {diagnostics};
+  }
+
+  scope().add({{{decl->identifier}}}, final_type, decl->is_mutable);
+  return final_type;
+}
+
+QT
+A::resolve_member_access(QT base, const std::string &member_name) {
+  switch (base->kind) {
+  case type_kind_t::eStruct: {
+    struct_layout_t *layout = base->as.struct_layout;
+    auto member = layout->member(member_name);
+    if (member) return member->type;
+    break;
+  }
+  case type_kind_t::eContract: {
+    contract_t *contract = base->as.contract;
+    if (contract->requirements.contains(member_name)) {
+      return contract->requirements.at(member_name);
+    }
+    break;
+  }
   default:
     break;
   }
-  return R;
+
+  return nullptr;
 }
 
-SP<type_t>
-analyzer_t::analyze_binop(SP<ast_node_t> node) {
-  binop_expr_t *expr = node->as.binop;
+QT
+A::analyze_symbol(N node) {
+  auto path = node->as.symbol->path;
 
-  SP<type_t> lty = analyze_node(expr->left);
-  SP<type_t> rty = analyze_node(expr->right);
-
-  if (lty->kind == type_kind_t::ePointer &&
-      rty->is_numeric()) {
-    // Pointer arithmetic is allowed and returns the same pointer type.
-    return lty;
+  if (path.has_generic() && is_template_declaration(path)) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Invalid template", "Expected template instantiation, got declaration, ensure all generics are fully specified."));
+    throw analyze_error_t {diagnostics};
   }
 
-  if (!is_coercible(lty, rty)) {
-    invalid_operation(node, lty, rty, expr->op);
-    return nullptr;
+  if (path.has_generic() && is_template_instantiation(path)) {
+    auto candidates = scope().candidates(path);
+    if (candidates.empty()) {
+      diagnostics.messages.push_back(error(node->source, node->location, "Unknown template", "Couldn't infer what template to use here."));
+      throw analyze_error_t{diagnostics};
+    }
+    return monomorphize(candidates.front(), path);
   }
 
-  auto nty = resolve_primitive_binop(expr->op, lty, rty);
-  return nty;
-}
+  // Since we don't disambiguate between namespaces, etc., we have to do some special checks on this symbol now.
 
-SP<type_t>
-analyzer_t::analyze_symbol(SP<ast_node_t> node) {
-  symbol_expr_t *expr = node->as.symbol;
+  // Any of these cases might be true:
+  // 1. `a.b` refers to member `b` on variable `a`
+  // 2. `a.b` refers to a fully-specified symbol in global space
+  // 3. `a.b` refers to a UFCS, where `a` is a local variable, and `b` refers to a function named like `<type of a>.b`
+  //
+  // Generally, 1 has higher precendence over two.
 
-  auto sym = get_scope()->resolve(to_string(expr->path));
-  if (!sym) {
-    // Might be a template
-    if (expr->path.has_generic()) {
-      
+  path_t pcopy = path;
+  SP<symbol_t> sym = scope().resolve(path_t {{{pcopy.segments.front()}}});
+  SP<type_t> left = sym ? sym->type : nullptr;
+  pcopy.segments.erase(pcopy.segments.begin());
+
+  if (left) { // UFCS
+    path_t ufcs = pcopy;
+    ufcs.segments.insert(ufcs.segments.begin(), left->name.segments.begin(), left->name.segments.end());
+
+    // Might be a template..
+    if (ufcs.has_generic()) {
+      auto candidates = scope().candidates(ufcs);
+      if (candidates.size() > 0) {
+        return monomorphize(candidates.front(), ufcs);
+      }
     }
 
-    throw error(source, node->location, UNKNOWN_SYMBOL, fmt(UNKNOWN_SYMBOL_DETAIL, to_string(expr->path)));
+    sym = scope().resolve(ufcs);
+    if (sym) return sym->type;
+  }
+
+  while (pcopy.segments.size() > 0 && left) {
+    auto member = resolve_member_access(left, pcopy.segments.front().name);
+    if (member == nullptr) {
+      left = nullptr;
+      break;
+    }
+    left = member;
+    pcopy.segments.erase(pcopy.segments.begin());
+  }
+
+  if (left) {
+    // Member access
+    return left;
+  }
+
+  sym = scope().resolve(path);
+  if (!sym) {
+    diagnostics.messages.emplace_back(error(source, node->location, "Unknown symbol", fmt("Symbol `{}` is not known in the current scope.", to_string(path))));
+    throw analyze_error_t {diagnostics};
   }
 
   return sym->type;
 }
 
-call_frame_t analyzer_t::prepare_call_frame(call_expr_t *expr) {
-  // Calls to functions can happen in two certain configurations
-  //
-  // 1. Dispatched statically from a type `heap.init`
-  // 2. Dispatched via a member access `my_heap.alloc`
-  //
-  // For one, we don't have to do much.
-  // For two, we have to declare the implicit receiver (first `self` argument) on the expr.
-
-  call_frame_t frame;
-
-  // Figure out what the function actually is
-  auto fnty = analyze_node(expr->callee);
-  if (!fnty) {
-    throw error(source, expr->callee->location, UNKNOWN_SYMBOL, fmt(UNKNOWN_SYMBOL_DETAIL, source.string(expr->callee->location)));
-  }
-
-  // Check that it is actually callable
-  if (fnty->kind != type_kind_t::eFunction) {
-        throw error(source, expr->callee->location, NOT_A_FUNCTION,
-                    fmt(NOT_A_FUNCTION_DETAIL, source.string(expr->callee->location), to_string(fnty)));
-  }
-
-  auto fn = fnty->as.function;
-  frame.expected_params = fn->arg_types;
-  frame.return_type = fn->return_type;
-  frame.is_var_args = fn->is_var_args;
-
-  // Special case for call from a member-access:
-  // This is syntactic sugar for:
-  // my_symbol.function() -> my_type.function(my_symbol)
-
-  if (expr->callee->kind == ast_node_t::eMemberAccess
-      && fn->receiver) {
-    member_access_expr_t *mem_expr = expr->callee->as.member_access;
-
-    auto receiver = analyze_node(mem_expr->object);
-    if (receiver == fn->receiver
-        || (receiver->kind == type_kind_t::ePointer && (receiver->as.pointer->base == fn->receiver))) {
-      // We can only try to coerce if the receiver types are the same.
-      auto self_type = fn->arg_types.front();
-
-      if (!is_coercible(receiver, self_type)) {
-        if (self_type->kind == type_kind_t::ePointer) {
-          // Pointer types are easy to coerce.  But we only support one
-          // level of indirection.
-          auto self_receiver = make_node<addr_of_expr_t>(ast_node_t::eAddrOf, {.value = mem_expr->object}, mem_expr->object->location);
-          frame.effective_args.push_back(self_receiver);
-        }
-      } else {
-        frame.effective_args.push_back(mem_expr->object);
-      }
-    }
-
-    // Desugar the member access into the fully qualified symbol
-    string_list path;
-    flatten_member_access(expr->callee, path);
-    desugar<symbol_expr_t>(expr->callee, ast_node_t::eSymbol, {.path = {{{join({fn->receiver->name, path.back()}, ".")}}}});
-  }
-
-  // Push the expected parameters
-  for (auto &arg : expr->arguments) {
-    frame.effective_args.push_back(arg);
-  }
-
-  return frame;
+bool
+A::is_rvalue(N node) {
+  return !is_lvalue(node);
 }
 
-SP<ast_node_t> analyzer_t::coerce(SP<ast_node_t> node, SP<type_t> type) {
-  if (!node->type) analyze_node(node);
-  auto current_type = node->type;
-
-  if (current_type->kind == type_kind_t::eArray &&
-      type->kind == type_kind_t::eSlice) {
-
-    path_t name {.segments = {{.name = type->name}}};
-    auto slice_type =
-      make_node<type_decl_t>(ast_node_t::eType, {
-          .name = name,
-          .is_mutable = true,
-          .is_slice = true
-        }, node->location);
-    // Array -> Slice requires explicit cast, that we, for
-    // conciseness, sugar away.
-    auto desugared = make_node<cast_expr_t>(ast_node_t::eCast,
-                                  {
-                                    .value = node,
-                                    .type = slice_type
-                                  }, node->location);
-    analyze_node(desugared);
-    return desugared;
-  }
-  return node;
+bool
+A::is_lvalue(N node) {
+  return node->kind == ast_node_t::eSymbol ||
+         node->kind == ast_node_t::eMemberAccess;
 }
 
-SP<type_t> analyzer_t::analyze_call(SP<ast_node_t> node) {
-  call_expr_t *expr = node->as.call_expr;
+bool
+A::is_mutable(N node) {
+  if (!is_lvalue(node)) return false;
 
-  auto frame = prepare_call_frame(expr);
-
-  // Verify that we have enough args
-  if (frame.effective_args.size() != frame.expected_params.size()
-      && !frame.is_var_args) {
-    throw error(source, node->location,
-                fmt(ARG_COUNT_MISMATCH, frame.effective_args.size() > frame.expected_params.size() ? "many" : "few"),
-                fmt(ARG_COUNT_MISMATCH_DETAIL, source.string(expr->callee->location),
-                    frame.expected_params.size(), frame.effective_args.size()));
-  }
-
-  // Verify that all arguments either match, or are coercible to
-  // what they need to be.
-  for (size_t i = 0; i < frame.effective_args.size(); ++i) {
-    // Analyze the our passed argument first, otherwise the type wont
-    // be inferred for the codegen later.
-    auto current_ty = analyze_node(frame.effective_args[i]);
-
-    // Skip if we exceed expected args (only when the fn is varargs)
-    if (i >= frame.expected_params.size())
-      continue;
-
-    auto expected_ty = frame.expected_params[i];
-    if (!is_coercible(current_ty, expected_ty)) {
-      type_error(expected_ty, current_ty, frame.effective_args[i]);
-    } else {
-      frame.effective_args[i] = coerce(frame.effective_args[i], expected_ty);
-    }
-  }
-
-  expr->arguments = frame.effective_args;
-  return frame.return_type;
-}
-
-std::string analyzer_t::join(const std::vector<std::string> &list,
-                                          const std::string &separator) {
-  std::stringstream ss;
-  for (int64_t i = 0; i < list.size(); ++i) {
-    ss << list[i];
-    if (i < list.size() - 1)
-      ss << separator;
-  }
-  return ss.str();
-}
-
-std::vector<std::string> analyzer_t::split(const std::string &list,
-                                           const std::string &separator) {
-  std::string str = list;
-  string_list result;
-  auto p = str.find(separator);
-  while (p != std::string::npos) {
-    result.push_back(str.substr(0, p));
-    str = str.substr(p + 1);
-    p = str.find(separator);
-  }
-  // Push remaining
-  result.push_back(str);
-  return result;
-}
-
-SP<symbol_t>
-analyzer_t::resolve_path(const std::vector<std::string> &path) {
-  auto sym = get_scope()->resolve(join(path, "."));
-  if (sym) return sym;
-  return nullptr;
-}
-
-void
-analyzer_t::flatten_member_access(SP<ast_node_t> node,
-                                       std::vector<std::string> &path) {
-  // Flatten member access structures into a flat dot separated list
-  if (node->kind == ast_node_t::eSymbol) {
-    // Only on symbols, these might be either static, or local.
-    path.push_back(to_string(node->as.symbol->path));
-  } else if (node->kind == ast_node_t::eMemberAccess) {
-    flatten_member_access(node->as.member_access->object, path);
-    path.push_back(node->as.member_access->member);
-  }
-}
-
-SP<type_t>
-analyzer_t::analyze_member_access(SP<ast_node_t> node) {
-  member_access_expr_t expr = *node->as.member_access;
-
-  auto scope = get_scope();
-
-  // Member access is more difficult and nuanced.
-  //
-  // Since we mix namespaces & symbols, a nested member access /might/
-  // point into a structure, but it might also point at a symbol
-  // (e.g. std.print, or std.io.file)
-  //
-  // So first, we'll try to collect recursively collect member access
-  // objects (as long as they are symbols) into a list.
-
-  string_list path;
-  flatten_member_access(node, path);
-
-  // Now, the first step is to check if this symbol exists.
-  // This works with, e.g. `std.file.open`
-  if (auto sym = scope->resolve(join(path, "."))) {
-    // It exists, then this is a static symbol.
-    // Desugar this access into a normal symbol.
-    desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.path = {{{join(path, ".")}}}});
-    return analyze_node(node);
-  }
-
-  // Second, we can also try inferring the type, via the type infer cache.
-  if (has_type_infer()) {
-    auto type_name = split(get_type_infer()->name, ".");
-    auto infer_path = path;
-    infer_path.insert(infer_path.begin(), type_name.begin(), type_name.end());
-
-    if (auto sym = scope->resolve(join(path, "."))) {
-      // It exists, then this is a static symbol.
-      // Desugar this access into a normal symbol.
-      desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.path = {{{join(path, ".")}}}});
-      return analyze_node(node);
-    }
-  }
-
-  // Now we now look up the type of the object
-  auto object = analyze_node(expr.object);
-
-  // Pointers get automatically dereferenced by us.
-  if (object->kind == type_kind_t::ePointer) {
-    object = object->as.pointer->base;
-  }
-
-  // Slices & arrays have specific hidden fields
-  if (object->kind == type_kind_t::eSlice) {
-    auto slice = object->as.slice;
-    if (expr.member == "ptr")
-      return types.pointer_to(slice->element_type, {pointer_kind_t::eNonNullable}, slice->is_mutable);
-
-    if (expr.member == "size")
-      // TODO: Consider a `max` type depending on architecture instead of u64
-      return types.resolve("u64");
-  }
-
-  // Slices & arrays have specific hidden fields
-  if (object->kind == type_kind_t::eArray) {
-    auto array = object->as.array;
-    if (expr.member == "ptr")
-      return types.pointer_to(array->element_type, {pointer_kind_t::eNonNullable}, true);
-
-    if (expr.member == "size")
-      // TODO: Consider a `max` type depending on architecture instead of u64
-      return types.resolve("u64");
-  }
-
-  // If it's a struct, we might be accessing a member.
-  if (object->kind == type_kind_t::eStruct) {
-    auto layout = object->as.struct_layout;
-    if (auto member = layout->member(expr.member)) {
-      return member->type;
-    }
-  }
-
-  // As a last option, we lookup the typename + the member as a
-  // symbol, maybe it's that.
-  if (auto function =
-      scope->resolve(join({object->name, expr.member}, "."))) {
-    return function->type;
-  }
-
-  unknown_member(expr.member, object, node);
-  return types.resolve("void");
-}
-
-bool analyzer_t::is_lvalue(SP<ast_node_t> node) {
   switch (node->kind) {
-  case ast_node_t::eSymbol:
-    return true;
-  case ast_node_t::eMemberAccess:
-    return is_lvalue(node->as.member_access->object);
-  case ast_node_t::eSelf:
-    return true;
-  case ast_node_t::eDeref:
-    return is_lvalue(node->as.deref_expr->value);
+  case ast_node_t::eSymbol: {
+    symbol_expr_t *expr = node->as.symbol;
+    auto symbol = scope().resolve(expr->path);
+    if (!symbol)
+      return false;
+
+    return symbol->is_mutable;
+  }
   default:
-    return false;
+    assert(false && "is_mutable on invalid node type");
+    break;
   }
+  return false;
 }
 
-bool analyzer_t::is_mutable(SP<ast_node_t> node) {
-  switch (node->kind) {
-  case ast_node_t::eSymbol:
-    return get_scope()->resolve(to_string(node->as.symbol->path))->is_mutable;
-  case ast_node_t::eMemberAccess:
-    return is_mutable(node->as.member_access->object);
-  case ast_node_t::eSelf:
-    return get_scope()->resolve("self")->is_mutable;
-  case ast_node_t::eDeref:
-    return is_mutable(node->as.deref_expr->value);
-  default:
-    return false;
-  }
-}
-
-SP<type_t>
-analyzer_t::analyze_addr_of(SP<ast_node_t> node) {
-  // We can only take the address of locals.
-  addr_of_expr_t *addr = node->as.addr_of;
-
-  if (is_lvalue(addr->value)) {
-    auto qt = analyze_node(addr->value);
-    return types.pointer_to(qt, {pointer_kind_t::eNonNullable}, is_mutable(addr->value));
-  }
-  generic_error(node, "Illegal addr-of", "Taking the address of a temporary is not allowed.", "The address-of operator (`&`) can only be used on lvalues.");
-  return nullptr;
-}
-
-SP<type_t> analyzer_t::analyze_extern(SP<ast_node_t> node) {
-  extern_decl_t *decl = node->as.extern_decl;
-
-  // Save the information about extern somewhere we can later
-  // retrieve, to get weak bindings and not complain about unknown
-  // definition.
-  auto scope = get_scope();
-  auto extern_type = analyze_node(decl->import);
-  return extern_type;
-}
-
-SP<type_t> analyzer_t::analyze_unary(SP<ast_node_t> node) {
-  unary_expr_t *expr = node->as.unary;
-
-  if (expr->op == token_type_t::operatorExclamation) {
-    // <value>! turns a nullable pointer into a non-nullable one.
-    auto type = analyze_node(expr->value);
-    if (type->kind != type_kind_t::ePointer) {
-      generic_error(node, "Invalid cast", fmt("Non-nullable coercion is only applicable on pointers, found type `{}`", to_string(type)));
-    }
-
-    pointer_t *ptr = type->as.pointer;
-    if (ptr->indirections.back() == pointer_kind_t::eNonNullable) {
-      generic_error(node, "Invalid cast", fmt("Non-nullable coercion on non-nullable pointers is invalid, expected non-nullable pointer, found `{}`", to_string(type)));
-    }
-
-    // TODO: Either desugar this into a custom AST node, or move it into a `cast_expr_t`
-    auto indirections = ptr->indirections;
-    indirections.pop_back();
-    indirections.push_back(pointer_kind_t::eNonNullable);
-    return types.pointer_to(ptr->base, indirections, ptr->is_mutable);
-  }
-
-  // Shorthand syntax, this can be desugared into [MemberAccess [self] [expr]]
-  if (expr->op == token_type_t::operatorDot) {
-    // Collect the path
-    string_list path;
-    flatten_member_access(expr->value, path);
-
-    // Within a function, `.identifier` gets turned into `self.identifier`
-    if (has_function_frame() && has_type_infer()) {
-      auto receiver = get_function_frame()->as.function->receiver;
-      auto infer = get_type_infer();
-      // ... but only if the most recent type infer information is the
-      // same as the function receiver.
-      //
-      // This allows us to access self via `.` in receiver functions,
-      // but it also allows us to infer static symbols on
-      // declarations. (`let x: file = .open()` within function
-      // context)
-      if (receiver == infer) {
-        desugar<member_access_expr_t>(
-            node, ast_node_t::eMemberAccess,
-            {.object =
-                 make_node<self_decl_t>(ast_node_t::eSelf, {}, node->location),
-             .member = join(path, ".")});
-        return analyze_node(node);
-      }
-    }
-
-    // Join the shorthand with the most recent type within our
-    // inferral stack
-    if (has_type_infer()) {
-      auto infer_path = split(get_type_infer()->name, ".");
-      path.insert(path.begin(), infer_path.begin(), infer_path.end());
-      desugar<symbol_expr_t>(node, ast_node_t::eSymbol, {.path = {{{join(path, ".")}}}});
-      return analyze_node(node);
-    }
-  }
-
-  // Unaries return the same type.
-  auto sq = analyze_node(expr->value);
-  return sq;
-}
-
-SP<type_t>
-analyzer_t::analyze_self(SP<ast_node_t> node) {
-  if (!has_function_frame()) {
-    generic_error(node, "Unknown self", "`self` is only supported within member functions, usage here is invalid.");
-  }
-
-  auto frame = get_function_frame();
-  auto fn_sig = frame->as.function;
-  return fn_sig->arg_types[0];
-}
-
-SP<type_t>
-analyzer_t::analyze_if(SP<ast_node_t> node) {
-  if_stmt_t *stmt = node->as.if_stmt;
-  auto bool_type = types.resolve("bool");
-
-  auto condition_type = analyze_node(stmt->condition);
-  if (!is_coercible(condition_type, bool_type)) {
-    type_error(bool_type, condition_type, stmt->condition);
-  }
-
-  analyze_block(stmt->pass);
-  if (stmt->reject)
-    analyze_block(stmt->reject);
-
-  return types.resolve("void");
-}
-
-SP<type_t>
-analyzer_t::analyze_for(SP<ast_node_t> node) {
-  for_stmt_t *stmt = node->as.for_stmt;
-  auto bool_type = types.resolve("bool");
-
-  auto init_type = analyze_node(stmt->init);
-
-  auto condition_type = analyze_node(stmt->condition);
-  if (!is_coercible(condition_type, bool_type)) {
-    type_error(bool_type, condition_type, stmt->condition);
-  }
-
-  auto action_type = analyze_node(stmt->action);
-
-  analyze_block(stmt->body);
-
-  return types.resolve("void");
-}
-
-SP<type_t>
-analyzer_t::analyze_while(SP<ast_node_t> node) {
-  while_stmt_t *stmt = node->as.while_stmt;
-  auto bool_type = types.resolve("bool");
-
-  auto condition_type = analyze_node(stmt->condition);
-  if (!is_coercible(condition_type, bool_type)) {
-    type_error(bool_type, condition_type, stmt->condition);
-  }
-
-  analyze_block(stmt->body);
-  return types.resolve("void");
-}
-
-SP<type_t>
-analyzer_t::analyze_type_alias(SP<ast_node_t> node) {
-  type_alias_decl_t *decl = node->as.alias_decl;
-  auto base = analyze_node(decl->type);
-  return types.add_alias(decl->alias, base, decl->is_distinct);
-}
-
-SP<type_t>
-analyzer_t::analyze_cast(SP<ast_node_t> node) {
-  cast_expr_t *expr = node->as.cast;
-
-  auto target = analyze_node(expr->type);
-  auto source = analyze_node(expr->value);
-
-  if (is_castable(source, target)) {
-    return target;
-  }
-
-  invalid_cast(source, target, expr->value);
-  return nullptr;
-}
-
-SP<type_t>
-analyzer_t::analyze_deref(SP<ast_node_t> node) {
+QT A::analyze_deref(N node) {
   deref_expr_t *expr = node->as.deref_expr;
 
-  // Retrieve the type of the value
-  auto type = analyze_node(expr->value);
+  if (is_rvalue(expr->value)) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Dereferencing R-value", "This expression is an rvalue (temporary), and has no address, taking a reference of this is not allowed."));
+    throw analyze_error_t {diagnostics};
+  }
 
-  // Deref only works on pointers.
+  QT type = analyze_node(expr->value);
+
   if (type->kind != type_kind_t::ePointer) {
-    invalid_deref(type, node);
+    diagnostics.messages.push_back(error(node->source, node->location, "Dereferencing concrete type", "This expression resolves to a concrete type, expected a pointer."));
+    throw analyze_error_t {diagnostics};
   }
 
-  // If valid deref, pop the last indirection
-  auto indirections = type->as.pointer->indirections;
-  indirections.pop_back();
+  pointer_t *ptr = type->as.pointer;
+  auto indirections = ptr->indirections;
+  indirections.erase(indirections.begin());
 
-  if (indirections.size() > 0)
-    // We might only strip one pointer level
-    return types.pointer_to(type->as.pointer->base, indirections, type->as.pointer->is_mutable);
-  else
-    // We might also deref to the plain type.
-    return type->as.pointer->base;
+  return scope().types.pointer_to(ptr->base, indirections, ptr->is_mutable);
 }
 
-SP<type_t>
-analyzer_t::analyze_assignment(SP<ast_node_t> node) {
-  assign_expr_t *expr = node->as.assign_expr;
+QT
+A::analyze_type_alias(N node) {
+  type_alias_decl_t *decl = node->as.alias_decl;
+  return scope().types.add_alias(*current_binding, resolve_type(decl->type), decl->is_distinct);
+}
 
-  auto R = analyze_node(expr->value);
-  auto L = analyze_node(expr->where);
+QT
+A::analyze_struct_decl(N node) {
+  struct_decl_t *decl = node->as.struct_decl;
+  struct_layout_t layout {};
 
-  if (!is_mutable(expr->where)) {
-    var_error(expr->where);
+  for (auto &memb : decl->members) {
+    layout.members.push_back(struct_layout_t::field_t{
+        .name = memb.name,
+        .type = resolve_type(memb.type),
+      });
   }
 
-  if (is_coercible(R, L)) {
-    // This expression returns the left-hand side.
-    return L;
+  layout.compute_memory_layout();
+  return scope().types.add_struct(*current_binding, layout);
+}
+
+QT
+A::analyze_struct_expr(N node) {
+  struct_expr_t *expr = node->as.struct_expr;
+
+  QT struct_type = analyze_node(expr->type);
+  // TODO: Check members...
+  return struct_type;
+}
+
+QT
+A::analyze_cast(N node) {
+  cast_expr_t *decl = node->as.cast;
+
+  QT value_type = analyze_node(decl->value);
+  QT cast_type = resolve_type(decl->type);
+
+  if (!is_cast_convertible(value_type, cast_type)) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Invalid cast", fmt("Casting from `{}` to `{}` is not possible.", to_string(value_type), to_string(cast_type))));
+    throw analyze_error_t{diagnostics};
   }
-  invalid_assignment(R, expr->where);
-  return nullptr;
+  return cast_type;
 }
 
-SP<type_t>
-analyzer_t::analyze_nil(SP<ast_node_t> node) {
-  return types.pointer_to(types.resolve("any"), {pointer_kind_t::eNullable}, false);
+bool
+A::satisfies_contract(QT type, QT contract_type) {
+  assert(contract_type->kind == type_kind_t::eContract);
+
+  contract_t *contract = contract_type->as.contract;
+  for (auto &[req_name, req_type] : contract->requirements) {
+    if (req_type->kind == type_kind_t::eFunction) {
+      auto contract_fn = req_type->as.function;
+
+      auto sym = scope().resolve({{{to_string(type->name)}, {req_name}}});
+      if (!sym) {
+        std::cerr << to_string(type) << " does not implement " << req_name << "\n";
+        return false;
+      }
+
+      // The symbol type has to be the same kind as the contract member type.
+      if (sym->type->kind != type_kind_t::eFunction) {
+        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("`{}` does not implement the contract function `{}` (got {}, expected {})", to_string(sym->name), req_name, to_string(sym->type), to_string(req_type))));
+        return false;
+      }
+
+      auto symbol_fn = sym->type->as.function;
+
+      // Parameter count mismatch breaks contracts.
+      if (symbol_fn->arg_types.size() != contract_fn->arg_types.size()) {
+        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}` (got {}, expected {})", to_string(sym->name), req_name, to_string(sym->type), to_string(req_type))));
+        return false;
+      }
+
+      for (auto i = 0; i < contract_fn->arg_types.size(); ++i) {
+        auto contract_fn_param = contract_fn->arg_types[i];
+        auto symbol_fn_param = symbol_fn->arg_types[i];
+
+        // Type mismatches in the argument list breaks contract.
+        if (contract_fn_param != symbol_fn_param) {
+          diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}` (got {}, expected {})", to_string(sym->name), req_name, to_string(sym->type), to_string(req_type))));
+          return false;
+        }
+      }
+
+      if ((symbol_fn->receiver.get() != nullptr) !=
+          (contract_fn->receiver.get() != nullptr)) {
+        diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}`, receiver present on one, but not the other..", to_string(sym->name), req_name)));
+        return false;
+      }
+    } else {
+      if (type->kind != type_kind_t::eStruct) {
+        diagnostics.messages.push_back(error(source, {{0,0},{0,0}}, "Contract violation", fmt("Type `{}` can't satisfy contract `{}` due to member requirement `{}`", to_string(type->name), to_string(contract_type->name), req_name)));
+        return false;
+      }
+
+      auto member = type->as.struct_layout->member(req_name);
+      if (!member) {
+        diagnostics.messages.push_back(error(source, {{0,0},{0,0}}, "Contract violation", fmt("Type `{}` can't satisfy contract `{}` due to missing member `{}`", to_string(type->name), to_string(contract_type->name), req_name)));
+        return false;
+      }
+
+      if (member->type != req_type) {
+        diagnostics.messages.push_back(error(source, {{0,0},{0,0}}, "Contract violation", fmt("Type `{}` can't satisfy contract `{}` due to member `{}` type mismatch (got {}, expected {})", to_string(type->name), to_string(contract_type->name), req_name, to_string(member->type), to_string(req_type))));
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
-SP<type_t>
-analyzer_t::analyze_attribute(SP<ast_node_t> node) {
-  attribute_decl_t *decl = node->as.attribute_decl;
-  return analyze_node(decl->affect);
+bool
+A::is_implicit_convertible(QT from, QT into) {
+  if (*from == *into)
+    return true;
+
+  // Compile-time arrays can be converted to slices.
+  if (from->kind == type_kind_t::eArray && into->kind == type_kind_t::eSlice
+    && from->as.array->element_type == into->as.slice->element_type) {
+    return true;
+  }
+
+  // Non-distinct aliases can be converted to the base type
+  if (from->kind == type_kind_t::eAlias &&
+      from->as.alias->alias == into) {
+    return true;
+  }
+
+  // Any pointer can be cast into any other concrete pointer and vice-versa
+  if (from->kind == type_kind_t::ePointer &&
+      into->kind == type_kind_t::ePointer) {
+    auto f = from->as.pointer;
+    auto i = into->as.pointer;
+    auto any = resolve_type("any");
+
+    // Mutability Check: Cannot cast non-mutable to mutable.
+    // (If 'into' wants to change things, 'from' must have been mutable).
+    if (i->is_mutable && !f->is_mutable) {
+        return false;
+    }
+
+    // Nullability Check: Cannot cast nullable to non-nullable.
+    // f_indir == nullable && i_indir == non-nullable is forbidden.
+    auto f_indir = f->indirections.front();
+    auto i_indir = i->indirections.front();
+
+    if (f_indir == pointer_kind_t::eNullable && i_indir == pointer_kind_t::eNonNullable) {
+        return false;
+    }
+
+    // Base Type Compatibility
+    // Valid if types match, or if either side is 'any' (Type Erasure/Restoration).
+    bool types_match = (f->base == i->base);
+    bool involves_any = (*f->base == *any || *i->base == *any);
+
+    return types_match || involves_any;
+  }
+
+  return false;
 }
 
-void analyzer_t::register_template(SP<ast_node_t> node) {
-  std::cout << "Registering template " << to_string(node->as.template_decl->name) << "\n";
-  templates.templates[node->as.template_decl->name] = std::make_shared<template_decl_t>(*node->as.template_decl);
+bool
+A::is_cast_convertible(QT from, QT into) {
+  // Casting from concrete types into contracts is allowed.
+
+  if (into->kind == type_kind_t::eContract) {
+    return satisfies_contract(from, into);
+  }
+
+  return false;
 }
 
-SP<type_t>
-analyzer_t::analyze_node(SP<ast_node_t> node) {
-  SP<type_t> type;
+QT
+A::analyze_contract(N node) {
+  contract_decl_t *decl = node->as.contract_decl;
+  auto contract_name = *current_binding;
+  auto self_type = scope().types.self_placeholder(contract_name);
+
+  std::map<std::string, QT> requirements;
+  for (auto &member : decl->requirements) {
+
+    switch (member->kind) {
+    case ast_node_t::eBinding: {
+      binding_decl_t *binding = member->as.binding_decl;
+
+      if (binding->value) {
+        // <identifier> := fn ()
+        assert(binding->value->kind == ast_node_t::eFunctionDecl);
+        requirements[to_string(binding->name)] = analyze_function_decl(binding->value, self_type);
+      } else {
+        // <identifier>: <type>
+        requirements[to_string(binding->name)] = resolve_type(*binding->type);
+      }
+      break;
+    }
+    default:
+      assert(false && "Unsupported contract specification");
+    }
+  }
+  return scope().types.add_contract(contract_name, requirements);
+}
+
+QT A::resolve_binop_result_type(binop_type_t ty, QT left, QT right) {
+  switch (ty) {
+  case binop_type_t::eAnd:
+  case binop_type_t::eOr:
+    return resolve_type("bool");
+  default:
+    return left;
+  }
+}
+
+QT
+A::analyze_binop(N node) {
+  binop_expr_t *expr = node->as.binop;
+
+  QT left = analyze_node(expr->left);
+  QT right = analyze_node(expr->right);
+
+  return resolve_binop_result_type(expr->op, left, right);
+}
+
+QT A::resolve_receiver(std::optional<path_t> path_opt) {
+  if (!path_opt) return nullptr;
+
+  // Pop last slice of path
+  path_t path = *path_opt;
+  if (path.segments.size() <= 1) return nullptr;
+
+  path.segments.pop_back();
+  return resolve_type(path);
+}
+
+QT
+A::analyze_addr_of(N node) {
+  addr_of_expr_t *addr_of = node->as.addr_of;
+
+
+  if (!is_lvalue(addr_of->value)) {
+    diagnostics.messages.push_back(error(node->source, addr_of->value->location, "Taking address of temporary", "This expression is temporary, taking the address of this is not allowed."));
+    throw analyze_error_t{diagnostics};
+  }
+
+  return scope().types.pointer_to(analyze_node(addr_of->value), {pointer_kind_t::eNonNullable}, is_mutable(addr_of->value));
+}
+
+QT
+A::analyze_defer(N node) {
+  analyze_node(node->as.defer_expr->action);
+  return resolve_type("void");
+}
+
+QT A::analyze_move(N node) {
+  move_expr_t *move = node->as.move_expr;
+  if (!is_lvalue(move->symbol) || move->symbol->kind != ast_node_t::eSymbol) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Moving temporary", "`move` can only be performed on lvalues, this expression is temporary."));
+    throw analyze_error_t{diagnostics};
+  }
+
+  symbol_expr_t *sym = move->symbol->as.symbol;
+
+  auto symbol = scope().resolve(sym->path);
+  if (!symbol) {
+    diagnostics.messages.emplace_back(error(source, node->location, "Unknown symbol", "Symbol is not known in the current scope."));
+    throw analyze_error_t{diagnostics};
+  }
+
+  scope().remove(sym->path);
+  return scope().types.rvalue_of(symbol->type);
+}
+
+QT
+A::analyze_nil(N node) {
+  return scope().types.pointer_to(resolve_type("any"), {pointer_kind_t::eNullable}, true);
+}
+
+QT
+A::monomorphize(SP<binding_decl_t> template_, path_t instantiation) {
+  push_scope();
+
+  auto path_size = instantiation.segments.size();
+  for (auto i = 0; i < path_size; ++i) {
+    auto& template_path = template_->name.segments[i];
+    auto& instantiation_path = instantiation.segments[i];
+
+    for (auto j = 0; j < template_path.generic_args.size(); ++j) {
+      // Get the abstract placeholder (e.g., 'T')
+      auto template_ty = resolve_type(template_path.generic_args[j].binding->name);
+      // Get the concrete type (e.g., 'i32')
+      auto concrete_ty = resolve_type(*instantiation_path.generic_args[j].binding);
+
+      // 1. Add to scope for the analyzer to use
+      scope().types.add_template_alias(template_path.generic_args[j].binding->name, concrete_ty);
+    }
+  }
+
+  auto old_binding = current_binding;
+  current_binding = resolve_template_instantiation(instantiation);
+
+  // Analyze the body (returns a type involving 'T')
+  QT abstract_type = analyze_node(template_->value);
+
+  pop_scope();
+  current_binding = old_binding;
+  return abstract_type;
+}
+
+QT
+A::analyze_if(N node) {
+  if_stmt_t *stmt = node->as.if_stmt;
+
+  QT condition_type = analyze_node(stmt->condition);
+  // TODO: Ensure `condition_type` is bool
+
+  QT pass_type = analyze_node(stmt->pass);
+  QT reject_type {nullptr};
+  if (stmt->reject)
+    reject_type = analyze_node(stmt->reject);
+
+  return resolve_type("void");
+}
+
+QT
+A::analyze_assignment(N node) {
+  assign_expr_t *assign = node->as.assign_expr;
+
+  auto symbol_type = analyze_node(assign->where);
+  auto value_type = analyze_node(assign->value);
+
+  if (*symbol_type != *value_type) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Invalid type", fmt("Assignment to lvalue of type `{}` with value `{}` is invalid.", to_string(symbol_type), to_string(value_type))));
+    throw analyze_error_t{diagnostics};
+  }
+
+  return symbol_type;
+}
+
+QT
+A::analyze_node(N node) {
+  QT type {};
 
   switch (node->kind) {
+  case ast_node_t::eBinding:
+    type = analyze_binding(node);
+    break;
+
+  case ast_node_t::eFunctionDecl:
+    type = analyze_function_decl(node, resolve_receiver(current_binding));
+    break;
+
   case ast_node_t::eFunctionImpl:
-    type = analyze_function(node);
+    type = analyze_function_impl(node, resolve_receiver(current_binding));
     break;
 
-  case ast_node_t::eFunctionDecl: // Function without body (extern, etc.)
-    type = analyze_function_decl(node);
-    break;
-
-  case ast_node_t::eDeclaration:
-    type = analyze_declaration(node);
-    break;
-
-  case ast_node_t::eExtern:
-    type = analyze_extern(node);
+  case ast_node_t::eCall:
+    type = analyze_call(node);
     break;
 
   case ast_node_t::eBlock:
@@ -1155,199 +981,70 @@ analyzer_t::analyze_node(SP<ast_node_t> node) {
     type = analyze_literal(node);
     break;
 
-  case ast_node_t::eBinop:
-    type = analyze_binop(node);
-    break;
-
-  case ast_node_t::eCall:
-    type = analyze_call(node);
-    break;
-
-  case ast_node_t::eReturn:
-    type = analyze_return(node);
-    break;
-
   case ast_node_t::eSymbol:
     type = analyze_symbol(node);
-    break;
-
-  case ast_node_t::eType:
-    type = analyze_type(node);
-    break;
-
-  case ast_node_t::eStructDecl:
-    type = analyze_struct(node);
-    break;
-
-  case ast_node_t::eMemberAccess:
-    type = analyze_member_access(node);
-    break;
-
-  case ast_node_t::eAddrOf:
-    type = analyze_addr_of(node);
-    break;
-
-  case ast_node_t::eUnary:
-    type = analyze_unary(node);
-    break;
-
-  case ast_node_t::eSelf:
-    type = analyze_self(node);
-    break;
-
-  case ast_node_t::eIf:
-    type = analyze_if(node);
-    break;
-
-  case ast_node_t::eTypeAlias:
-    type = analyze_type_alias(node);
-    break;
-
-  case ast_node_t::eCast:
-    type = analyze_cast(node);
     break;
 
   case ast_node_t::eDeref:
     type = analyze_deref(node);
     break;
 
-  case ast_node_t::eAssignment:
-    type = analyze_assignment(node);
+  case ast_node_t::eTypeAlias:
+    type = analyze_type_alias(node);
+    break;
+
+  case ast_node_t::eStructDecl:
+    type = analyze_struct_decl(node);
+    break;
+
+  case ast_node_t::eStructExpr:
+    type = analyze_struct_expr(node);
+    break;
+
+  case ast_node_t::eContract:
+    type = analyze_contract(node);
+    break;
+
+  case ast_node_t::eDeclaration:
+    type = analyze_declaration(node);
+    break;
+
+  case ast_node_t::eCast:
+    type = analyze_cast(node);
+    break;
+
+  case ast_node_t::eBinop:
+    type = analyze_binop(node);
+    break;
+
+  case ast_node_t::eAddrOf:
+    type = analyze_addr_of(node);
+    break;
+
+  case ast_node_t::eDefer:
+    type = analyze_defer(node);
+    break;
+
+  case ast_node_t::eMove:
+    type = analyze_move(node);
     break;
 
   case ast_node_t::eNil:
     type = analyze_nil(node);
     break;
 
-  case ast_node_t::eAttribute:
-    type = analyze_attribute(node);
+  case ast_node_t::eIf:
+    type = analyze_if(node);
     break;
 
-  case ast_node_t::eFor:
-    type = analyze_for(node);
-    break;
-
-  case ast_node_t::eWhile:
-    type = analyze_while(node);
-    break;
-
-  case ast_node_t::eTemplate:
-    register_template(node);
+  case ast_node_t::eAssignment:
+    type = analyze_assignment(node);
     break;
 
   default:
-    assert(false && "Analyzer Error: Unhandled AST node");
+    assert(false && "Unhandled AST node in analyzer");
   }
 
   node->type = type;
   return type;
-}
-
-void analyzer_t::type_error(SP<type_t> expected, SP<type_t> got, SP<ast_node_t> where) {
-  throw error(source, where->location,
-              ILLEGAL_TYPE, fmt(ILLEGAL_TYPE_DETAIL, to_string(got), to_string(expected)));
-}
-
-void analyzer_t::var_error(SP<ast_node_t> where) {
-  throw error(source, where->location,
-              MUTABILITY_VIOLATION, fmt(MUTABILITY_VIOLATION_DETAIL, source.string(where->location)), MUTABILITY_VIOLATION_RECOMMEND);
-}
-
-void analyzer_t::unknown_type_error(SP<ast_node_t> where) {
-  throw error(source, where->location,
-              UNKNOWN_TYPE, fmt(UNKNOWN_TYPE_DETAIL, source.string(where->location)));
-}
-
-void analyzer_t::infer_error(SP<ast_node_t> where) {
-  throw error(source, where->location,
-              UNKNOWN_TYPE,
-              INFER_DETAIL,
-              fmt(INFER_RECOMMEND, source.string(where->location)));
-}
-
-void analyzer_t::invalid_type_error(SP<type_t> ty, SP<ast_node_t> where) {
-  throw error(source, where->location,
-              INVALID_TYPE_ASSIGNMENT,
-              fmt(INVALID_TYPE_ASSIGNMENT_DETAIL, to_string(ty)));
-}
-
-void analyzer_t::invalid_assignment(SP<type_t> ty, SP<ast_node_t> where) {
-  throw error(source, where->location,
-              INVALID_ASSIGNMENT,
-              fmt(INVALID_ASSIGNMENT_DETAIL, to_string(ty), to_string(where->type)));
-}
-
-void analyzer_t::unknown_symbol(SP<ast_node_t> node) {
-  throw error(source, node->location,
-              UNKNOWN_SYMBOL,
-              fmt(UNKNOWN_SYMBOL_DETAIL, source.string(node->location)));
-}
-
-void analyzer_t::unknown_member(const std::string &member, SP<type_t> type, SP<ast_node_t> where) {
-  throw error(source, where->location,
-              UNKNOWN_MEMBER,
-              fmt(UNKNOWN_MEMBER_DETAIL, member, to_string(type)));
-}
-
-void analyzer_t::invalid_deref(SP<type_t> type, SP<ast_node_t> where) {
-  throw error(source, where->location,
-              INVALID_DEREF,
-              fmt(INVALID_DEREF_DETAIL, to_string(type)));
-}
-
-void analyzer_t::invalid_cast(SP<type_t> from, SP<type_t> into, SP<ast_node_t> where) {
-  throw error(source, where->location,
-              INVALID_CAST,
-              fmt(INVALID_CAST_DETAIL, to_string(from), to_string(into)));
-}
-
-void analyzer_t::generic_error(SP<ast_node_t> where, std::string msg, std::string detail, std::string recommendation) {
-  throw error(source, where->location, msg, detail,
-    recommendation);
-}
-
-void analyzer_t::invalid_operation(SP<ast_node_t> node, SP<type_t> L, SP<type_t> R, binop_type_t op) {
-  std::string operation;
-  using BT = binop_type_t;
-  switch (op) {
-  case BT::eAdd:
-    operation = "+";
-    break;
-  case BT::eAnd:
-    operation = "&&";
-    break;
-  case BT::eDivide:
-    operation = "/";
-    break;
-  case BT::eEqual:
-    operation = "==";
-    break;
-  case BT::eGT:
-    operation = ">";
-    break;
-  case BT::eGTE:
-    operation = ">=";
-    break;
-  case BT::eLT:
-    operation = "<";
-    break;
-  case BT::eLTE:
-    operation = "<=";
-    break;
-  case BT::eMultiply:
-    operation = "*";
-    break;
-  case BT::eNotEqual:
-    operation = "!=";
-    break;
-  case BT::eOr:
-    operation = "||";
-    break;
-  case BT::eSubtract:
-    operation = "-";
-    break;
-  }
-
-  throw error(source, node->location,
-              ILLEGAL_OPERATION, fmt(ILLEGAL_OPERATION_DETAIL, operation, to_string(L), to_string(R)));
 }

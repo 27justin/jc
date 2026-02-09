@@ -1,10 +1,8 @@
-#+TITLE: phoenix lang
+//import std.math;
+std.math.sqrt :=/* @(extern: "C", import: "sqrtd")  */ fn (_: f64) -> f64
 
-Statically compiled programming language.
+printf := fn (_: []u8, ..)
 
-# Example
-
-#+BEGIN_SRC px
 // Contracts define what a type has to be.
 // Any type that matches a contract, can be coerced into it.
 locatable := contract {
@@ -30,14 +28,14 @@ landmark := struct {
 get_distance := fn(a: locatable, b: locatable) -> f64 {
   let dx := a.lat - b.lat
   let dy := a.lon - b.lon
-  return std.math.sqrt(dx * dx + dy * dy)
+  std.math.sqrt(dx * dx + dy * dy)
 }
 
 main := fn() {
   let me := person {
     name: "Justin"
-    lat: 51.514244
-    lon: 7.468429
+    lat: 51.5142
+    lon: 7.4684
   }
 
   let phoenix_lake := landmark {
@@ -47,7 +45,6 @@ main := fn() {
     lon: 7.5130
   }
 
-  let dist := get_distance(me, phoenix_lake)
+  let dist := get_distance(me as locatable, phoenix_lake as locatable)
   printf("You are %f meters away from the landmark.", dist)
 }
-#+END_SRC

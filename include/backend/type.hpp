@@ -1,7 +1,9 @@
 #pragma once
 
+#include "frontend/path.hpp"
 #include <memory>
 #include <vector>
+#include <map>
 
 template<typename T>
 using SP = std::shared_ptr<T>;
@@ -23,15 +25,12 @@ struct struct_layout_t {
   void compute_memory_layout();
 };
 
-struct function_signature_t {
-  std::shared_ptr<type_t> return_type;
-  std::vector<std::shared_ptr<type_t>> arg_types;
-  SP<type_t> receiver;
-  bool is_var_args;
-};
-
 struct type_alias_t {
   SP<type_t> alias;
+  bool is_transparent = false; ///< Is the type alias is transparent,
+                               ///resolvers should immediately return
+                               ///the `alias` of this, instead of the
+                               ///alias type itself
 };
 
 enum class pointer_kind_t {
@@ -60,10 +59,25 @@ struct slice_t {
   bool is_mutable;
 };
 
-enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool, eArray, eSlice };
+struct function_signature_t {
+  std::shared_ptr<type_t> return_type;
+  std::vector<std::shared_ptr<type_t>> arg_types;
+  SP<type_t> receiver;
+  bool is_var_args;
+};
+
+struct contract_t {
+  std::map<std::string, SP<type_t>> requirements;
+};
+
+struct rvalue_reference_t {
+  SP<type_t> base;
+};
+
+enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool, eArray, eSlice, eContract, eSelf, eRValueReference };
 struct type_t {
   type_kind_t kind;
-  std::string name;
+  path_t name;
 
   size_t size, alignment; //< Alignment in bytes, size in bits.
 
@@ -75,6 +89,9 @@ struct type_t {
       pointer_t *pointer;
       array_t *array;
       slice_t *slice;
+      contract_t *contract;
+      rvalue_reference_t *rvalue;
+      void *any;
     };
   } as;
 
@@ -82,6 +99,7 @@ struct type_t {
 
   bool is_numeric() const;
 
+  bool operator ==(const type_t &other) const;
 
   static SP<type_t> make_slice(SP<type_t>, bool is_mutable);
 };

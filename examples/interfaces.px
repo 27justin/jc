@@ -1,0 +1,45 @@
+import std.vector
+
+printf := fn(_: []u8, ..)
+
+stringable := contract {
+  to_string := fn (!self) -> []u8
+}
+
+convertible<T> := contract {
+  into := fn (!self) -> T
+}
+
+print := fn (value: stringable) {
+ printf("Hello %s", value.to_string())
+}
+
+i32.to_string := fn (!self) -> []u8 {
+  "test"
+}
+
+pow := fn (a: convertible<i32>, _: convertible<i32>) -> i32 {
+  a.into()
+}
+
+i32.into := fn (!self) -> i32 {
+  0
+}
+
+moves := fn (a: ^i32) -> bool {
+  true
+}
+
+test := struct {
+  a: i32
+}
+
+main := fn (argc: i32, argv: ?!u8) -> i32 {
+  let int: i32 = 0
+  print(int as stringable)
+  defer printf("Goodbye world! %i\n", int)
+
+  let vec: std.vector<i32> = std.vector<i32>.init()
+  vec.push(1234)
+  0
+}

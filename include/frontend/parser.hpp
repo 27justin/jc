@@ -3,14 +3,16 @@
 #include <memory>
 
 #include "frontend/diagnostic.hpp"
+#include "frontend/path.hpp"
 #include "frontend/source.hpp"
 #include "frontend/token.hpp"
 #include "frontend/lexer.hpp"
 #include "frontend/ast.hpp"
 
 struct translation_unit_t {
-  const source_t &source;
+  std::shared_ptr<source_t> source;
   std::vector<SP<ast_node_t>> declarations;
+  std::vector<path_t> imports;
 };
 
 struct parse_error_t {
@@ -24,7 +26,7 @@ public:
       "Unexpected token `{}`, expected `{}`";
   static constexpr const char UNEXPECTED_TOKEN_ANY_DETAIL[] = "Unexpected token `{}`, expected any of: {}";
 
-  parser_t(lexer_t &lexer, const source_t &source) : lexer(lexer), source(source), token() {}
+  parser_t(lexer_t &lexer, std::shared_ptr<source_t> source) : lexer(lexer), source(source), token() {}
 
   translation_unit_t parse();
 
@@ -32,7 +34,7 @@ public:
 private:
   lexer_t &lexer;
   token_t token;
-  const source_t &source;
+  std::shared_ptr<source_t> source;
 
   void consume();
 
@@ -44,41 +46,36 @@ private:
   bool peek(token_type_t);
   token_type_t peek_any(std::vector<token_type_t>);
 
-  // Parsing Functions
+  path_t parse_path();
+  type_decl_t parse_type();
 
-  /// @brief Eats tokens corresponding to a full path such as "std.mem.heap"
-  std::string parse_path();
-  path_t parse_generic_path();
-
-  SP<ast_node_t> parse_primary();
-  SP<ast_node_t> parse_expression(int min_power = 0);
-
-  SP<ast_node_t> parse_type();
-  SP<ast_node_t> parse_variable_decl();
+  SP<ast_node_t> parse_struct();
   SP<ast_node_t> parse_binding();
+  SP<ast_node_t> parse_contract();
+  SP<ast_node_t> parse_runtime_binding();
+  SP<ast_node_t> parse_identifier();
 
-  SP<ast_node_t> parse_struct_decl();
-  SP<ast_node_t> parse_extern_decl();
-
-  SP<ast_node_t> parse_function_header();
-  SP<ast_node_t> parse_function_decl();
+  function_parameter_t parse_function_parameter();
+  SP<ast_node_t> parse_function();
+  SP<ast_node_t> parse_type_alias();
   SP<ast_node_t> parse_block();
   SP<ast_node_t> parse_statement();
   SP<ast_node_t> parse_return();
-
-  SP<ast_node_t> parse_function_call();
-  SP<ast_node_t> parse_function_binding();
+  SP<ast_node_t> parse_primary(bool allow_struct_literal = true);
+  SP<ast_node_t> parse_expression(int min_binding_power = 0, bool allow_struct_literal = true);
+  attribute_decl_t parse_attributes();
 
   SP<ast_node_t> parse_if();
-  SP<ast_node_t> parse_for();
   SP<ast_node_t> parse_while();
-  SP<ast_node_t> parse_type_alias();
+  SP<ast_node_t> parse_for();
+  SP<ast_node_t> parse_defer();
 
-  SP<ast_node_t> parse_array_access();
+  path_t parse_import();
 
-  SP<ast_node_t> parse_attribute();
+  std::vector<SP<ast_node_t>> parse_function_arguments();
+  struct_expr_t parse_struct_intialization();
 
-  range_expr_t parse_range();
+  void parse_generic_specifier(path_element_t &path);
 
   binop_type_t binop_type(const token_t &);
 };

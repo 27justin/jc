@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "frontend/path.hpp"
 #include "backend/type.hpp"
 
 //
@@ -9,8 +10,13 @@
 //   Every symbol has an associated type.
 //
 
+enum class symbol_state_t {
+  eAlive,
+  eMoved
+};
+
 struct symbol_t {
-  std::string name;
+  path_t name;
   SP<type_t> type;
   bool is_mutable;
 };

@@ -2,6 +2,7 @@
 #include "backend/type.hpp"
 #include "frontend/ast.hpp"
 #include "frontend/token.hpp"
+#include <optional>
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
@@ -11,6 +12,7 @@ using TT = token_type_t;
 using P = parser_t;
 using TU = translation_unit_t;
 
+using std::make_unique;
 using std::make_shared;
 
 // Returns {Left Binding Power, Right Binding Power}
@@ -26,15 +28,19 @@ std::pair<int, int> get_binding_power(TT type) {
   case TT::operatorExclamation: return {38, 39}; // ! has lower precedence than ., allows us to chain like .member! to cast into non-nullable pointer more easily.
   case TT::operatorDot:         return {40, 41}; // Member Access
   case TT::operatorNotEqual:    return {40, 41};
-  case TT::operatorEquality:    return {40, 41};
-  case TT::operatorMod:         return {20, 21};
+  case TT::operatorEquality:
+  case TT::operatorGTE:
+  case TT::operatorLTE:
+  case TT::delimiterLAngle:
+  case TT::delimiterRAngle:     return {40, 41};
+  case TT::operatorMod:         return {50, 51};
   case TT::operatorRange:       return {40, 41};
   case TT::operatorBooleanOr:   return {40, 41};
   case TT::operatorBooleanAnd:  return {40, 41};
   case TT::operatorXor:         return {20, 21};
-  case TT::delimiterLAngle:     return {31, 0};
-  case TT::delimiterRAngle:     return {31, 0};
-  case TT::operatorAs:          return {49, 50};
+  case TT::keywordAs:           return {80, 81};
+  case TT::operatorDeref:       return {99, 100};
+  case TT::delimiterLBrace:     return {31, 0}; // Struct initialization
   default:                      return {0, 0};
   }
 }
@@ -46,20 +52,24 @@ int get_unary_binding_power(TT type) {
     // highest precedence.
   case TT::operatorDot:
   case TT::operatorXor:
-    return 50;
+  case TT::operatorExclamation:
+    return 90;
+  case TT::operatorAnd:
+    return 81;
   default:
     return 25;
   }
 }
 
 void P::expect(TT ty) {
-  if (lexer.peek().type == ty) {
+  auto next = lexer.peek();
+  if (next.type == ty) {
     token = lexer.next();
     return;
   } else {
     diagnostics.messages.push_back(error(
-        source, token.location, fmt(UNEXPECTED_TOKEN, to_text(token.type)),
-        fmt(UNEXPECTED_TOKEN_DETAIL, to_text(token.type), to_text(ty))));
+        source, next.location, fmt(UNEXPECTED_TOKEN, to_text(token.type)),
+        fmt(UNEXPECTED_TOKEN_DETAIL, to_text(next.type), to_text(ty))));
     // TODO: Try to recover to get as much information as possible.
     throw parse_error_t {.diagnostics = diagnostics};
   }
@@ -124,839 +134,639 @@ bool P::peek(TT ty) {
   return false;
 }
 
-std::string P::parse_path() {
-  if (peek(TT::identifier) == false) // We don't want to skip past yet.
-    expect(TT::identifier); // Throw error if next is not an identifier
+void
+P::parse_generic_specifier(path_element_t &segment) {
+  expect(TT::delimiterLAngle);
+  do {
+    generic_t generic;
+    generic.binding = make_shared<type_decl_t>(parse_type());
 
-  auto start = lexer.peek().location.start;
-
-  // Skip until end of identifier
-  while (maybe(TT::identifier)) {
-    if (!maybe(TT::operatorDot)) break;
-  }
-
-  auto end = token.location.end;
-  return source.string({start, end});
-}
-
-path_t P::parse_generic_path() {
-  if (peek(TT::identifier) == false) // We don't want to skip past yet.
-    expect(TT::identifier); // Throw error if next is not an identifier
-
-  auto start = lexer.peek().location.start;
-
-  path_t path;
-  // Skip until end of identifier
-  while (maybe(TT::identifier)) {
-    path_element_t elem;
-    elem.name = source.string(token.location);
-
-    if (maybe(TT::delimiterLAngle)) {
-      do {
-        elem.generic_args.push_back(std::make_shared<type_decl_t>(*parse_type()->as.type));
-      } while(maybe(TT::operatorComma));
-      expect(TT::delimiterRAngle);
+    if (maybe(TT::operatorColon)) {
+      // Specifier
+      generic.constraints.push_back(parse_path());
     }
 
-    path.segments.push_back(elem);
-    if (!maybe(TT::operatorDot)) break;
-  }
+    segment.generic_args.push_back(generic);
+  } while (maybe(TT::operatorComma));
+  expect(TT::delimiterRAngle);
+}
 
-  auto end = token.location.end;
+path_t
+P::parse_path() {
+  path_t path;
+  while (is_keyword(lexer.peek().type) || is_identifier(lexer.peek().type)) {
+    token = lexer.next();
+    path_element_t segment;
+
+    segment.name = source->string(token.location);
+    if (peek(TT::delimiterLAngle)) {
+      parse_generic_specifier(segment);
+    }
+
+    path.segments.push_back(segment);
+
+    if (!maybe(TT::operatorDot)) {
+      break;
+    }
+  }
   return path;
 }
 
-SP<ast_node_t> P::parse_type() {
-  auto start = lexer.peek().location.start;
-
-  type_decl_t type_data {};
+type_decl_t
+P::parse_type() {
+  type_decl_t decl {};
 
   if (maybe(TT::keywordVar)) {
-    type_data.is_mutable = true;
+    // var type means pointer type
+    decl.is_mutable = true;
   }
 
   if (maybe(TT::delimiterLBracket)) {
-    if (maybe(TT::literalInt)) {
-      // Stack array, size has to be a simple literal.
-      auto len = std::stoull(source.string(token.location));
-      type_data.len = len;
+    if (maybe(TT::literalInt)) { // Compile-time stack array
+      decl.len = make_node<literal_expr_t>(ast_node_t::eLiteral, {.value = source->string(token.location), .type = literal_type_t::eInteger}, token.location, source);
+    } else if (peek(TT::identifier)){
+      decl.len = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = parse_path()}, token.location, source);
     } else {
-      // Slice type, basically a compiler generated struct { ptr: !type; len: u64; }
-      type_data.is_slice = true;
+      decl.is_slice = true;
     }
     expect(TT::delimiterRBracket);
   }
 
-  while (maybe(TT::operatorExclamation)
-         || maybe(TT::operatorQuestion)) {
-    type_data.indirections.push_back(token.type == TT::operatorExclamation ? pointer_kind_t::eNonNullable : pointer_kind_t::eNullable);
+  while (maybe(TT::operatorExclamation) || maybe(TT::operatorQuestion)) {
+    decl.indirections.push_back(token.type == TT::operatorExclamation ? pointer_kind_t::eNonNullable : pointer_kind_t::eNullable);
   }
 
-  if (type_data.is_mutable &&
-      type_data.indirections.size() == 0 &&
-      type_data.is_slice == false) {
-    throw error(source, token.location, "Unexpected keyword `var`", "`var` was not expected here.", "Type declarations are only allowed to contain `var`, if they define a pointer. Otherwise this is not allowed.");
-  }
-
-
-  type_data.name = parse_generic_path();
-
-  return make_node<type_decl_t>(ast_node_t::eType, type_data, {start, token.location.end});
-}
-
-
-SP<ast_node_t> P::parse_function_call() {
-  auto node = make_shared<ast_node_t>();
-  call_expr_t call {};
-
-  auto start = token.location.start;
-
-  if (!peek(TT::delimiterRParen)) {
-    bool done = false;
-    while (!done) {
-      call.arguments.push_back(parse_expression());
-      TT ty = peek_any({TT::operatorComma, TT::delimiterRParen});
-      switch (ty) {
-      case TT::operatorComma:
-        expect(TT::operatorComma);
-        continue;
-      case TT::delimiterRParen:
-        expect(TT::delimiterRParen);
-        done = true;
-        continue;
-      default:
-        break;
-      }
-    }
-  } else {
-    expect(TT::delimiterRParen);
-  }
-
-  node->as.call_expr = new call_expr_t(call);
-  node->kind = ast_node_t::eCall;
-  node->location = {start, token.location.end};
-  return node;
-}
-
-void escape_string_literal(std::string &str) {
-  size_t write_idx = 0;
-
-  for (size_t read_idx = 0; read_idx < str.length(); ++read_idx) {
-    if (str[read_idx] == '\\' && read_idx + 1 < str.length()) {
-      // Move to the character after the backslash
-      read_idx++;
-      char escape = str[read_idx];
-
-      switch (escape) {
-      case 'n':  str[write_idx++] = '\n'; break;
-      case 'r':  str[write_idx++] = '\r'; break;
-      case 't':  str[write_idx++] = '\t'; break;
-      case '\\': str[write_idx++] = '\\'; break;
-      case '\'': str[write_idx++] = '\''; break;
-      case '\"': str[write_idx++] = '\"'; break;
-      case '0':  str[write_idx++] = '\0'; break;
-
-        // Hex escape: \xFF (2 digits)
-      case 'x': {
-        if (read_idx + 2 < str.length()) {
-          std::string hex = str.substr(read_idx + 1, 2);
-          str[write_idx++] = static_cast<char>(std::stoi(hex, nullptr, 16));
-          read_idx += 2;
-        }
-        break;
-      }
-
-        // Unicode escape: \u1234 (4 digits)
-      case 'u': {
-        if (read_idx + 4 < str.length()) {
-          std::string uni = str.substr(read_idx + 1, 4);
-          uint32_t cp = static_cast<uint32_t>(std::stoul(uni, nullptr, 16));
-
-          // Basic UTF-8 conversion for the codepoint
-          if (cp <= 0x7F) {
-            str[write_idx++] = static_cast<char>(cp);
-          } else if (cp <= 0x7FF) {
-            str[write_idx++] = static_cast<char>(0xC0 | (cp >> 6));
-            str[write_idx++] = static_cast<char>(0x80 | (cp & 0x3F));
-          } else { // 0x800 to 0xFFFF
-            str[write_idx++] = static_cast<char>(0xE0 | (cp >> 12));
-            str[write_idx++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-            str[write_idx++] = static_cast<char>(0x80 | (cp & 0x3F));
-          }
-          read_idx += 4;
-        }
-        break;
-      }
-
-      default:
-        // Unknown escape, keep the character
-        str[write_idx++] = escape;
-        break;
-      }
-    } else {
-      str[write_idx++] = str[read_idx];
-    }
-  }
-  str.resize(write_idx);
-}
-
-SP<ast_node_t> P::parse_primary() {
-  // Parse the smallest atomic unit we can find (symbol, literal, unary operator)
-  auto node = make_shared<ast_node_t>();
-  auto start = lexer.peek().location.start;
-
-  if (maybe(TT::literalString) || maybe(TT::literalInt) ||
-      maybe(TT::literalFloat) || maybe(TT::literalBool)) {
-    auto str = source.string(token.location);
-    literal_type_t ty {};
-    if (token.type == TT::literalString) {
-      escape_string_literal(str);
-      ty = literal_type_t::eString;
-    }
-    if (token.type == TT::literalInt)
-      ty = literal_type_t::eInteger;
-    if (token.type == TT::literalFloat)
-      ty = literal_type_t::eFloat;
-    if (token.type == TT::literalBool)
-      ty = literal_type_t::eBool;
-
-    node->kind = ast_node_t::eLiteral;
-    node->as.literal_expr = new literal_expr_t(str, ty);
-    goto done;
-  }
-
-  if (peek(TT::identifier)) {
-    // Simple lookup
-    symbol_expr_t resolver;
-    resolver.path = parse_generic_path();
-    node->kind = ast_node_t::eSymbol;
-    node->as.symbol = new symbol_expr_t(resolver);
-    goto done;
-  }
-
-  if (maybe(TT::keywordSelf)) {
-    node->kind = ast_node_t::eSelf;
-    goto done;
-  }
-
-  if (maybe(TT::keywordNil)) {
-    node->kind = ast_node_t::eNil;
-    goto done;
-  }
-
-  if (maybe(TT::delimiterLParen)) {
-    node = parse_expression(0);
-    expect(TT::delimiterRParen);
-    goto done;
-  }
-
-  // Operators
-  if (is_operator(lexer.peek().type)) {
-    // Since we are parsing a primary atom, a operator here means we
-    // have to parse a unary
-    token = lexer.next();
-
-    switch (token.type) {
-    case token_type_t::operatorAnd: {
-      addr_of_expr_t *addr = new addr_of_expr_t {};
-      addr->value = parse_expression(get_unary_binding_power(token.type));
-
-      node->as.addr_of = addr;
-      node->kind = ast_node_t::eAddrOf;
-      break;
-    }
-    default: {
-      unary_expr_t *unary = new unary_expr_t {};
-      unary->op = token.type;
-      // Different unary operators have different binding power. The
-      // highest binding power are designated for `.` (shorthand
-      // operator), and `^` (shorthand return type operator)
-      unary->value = parse_expression(get_unary_binding_power(token.type));
-
-      node->as.unary = unary;
-      node->kind = ast_node_t::eUnary;
-    }
-    }
-    goto done;
-  }
-
-  done:
-  node->location = {start, token.location.end};
-  return node;
-}
-
-SP<ast_node_t> P::parse_expression(int min_power) {
-  auto left = parse_primary();
-  auto start = token.location.start;
-
-  while (true) {
-    auto op = lexer.peek();
-    auto [left_binding_power, right_binding_power] = get_binding_power(op.type);
-
-    if (left_binding_power <= min_power) break;
-
-    // Consume the operator
-    token = lexer.next();
-
-    // Special case for `(`, those are function calls, not binary operators.
-    if (op.type == TT::delimiterLParen) {
-      auto call = parse_function_call();
-      call->as.call_expr->callee = left;
-      left = call;
-      // Continue parsing the expression (allow for, e.g. `call() + 9 / 2`)
-      continue;
-    }
-
-    // Special case for `[`, that is an array access
-    if (op.type == TT::delimiterLBracket) {
-      auto right = parse_expression(0);
-      left = make_node<deref_expr_t>(ast_node_t::eDeref, {make_node<binop_expr_t>(ast_node_t::eBinop, {
-          .op = binop_type_t::eAdd,
-          .left = left,
-          .right = right
-            }, token.location)}, token.location);
-      expect(TT::delimiterRBracket);
-      continue;
-    }
-
-    // Special case for `.`, those are member access operators.
-    if (op.type == TT::operatorDot) {
-      // ... unless it is a `.*`, then it's a deref.
-      if (maybe(TT::operatorMultiply)) {
-        left = make_node<deref_expr_t>(ast_node_t::eDeref, { .value = left }, { start, token.location.end });
-        continue;
-      }
-
-      expect(TT::identifier);
-
-      // Member
-      auto member_name = source.string(token.location);
-      left = make_node<member_access_expr_t>(ast_node_t::eMemberAccess, {
-          .object = left,
-          .member = member_name
-        }, {start, token.location.end});
-      continue;
-    }
-
-    // Special case for `->`, that is the cast operator
-    if (op.type == TT::operatorAs) {
-      left = make_node<cast_expr_t>(ast_node_t::eCast, {
-          .value = left,
-          .type = parse_type()
-        }, {start, token.location.end});
-      continue;
-    }
-
-    // Special case for `=`, that is assignment
-    if (op.type == TT::operatorEqual) {
-      auto right = parse_expression(right_binding_power);
-      left = make_node<assign_expr_t>(ast_node_t::eAssignment, {
-                                                                .where = left,
-                                                                .value = right
-            }, left->location);
-      continue;
-    }
-
-    // Special case for `!` that coerces nullable pointers into
-    // non-nullable ones.
-    if (op.type == TT::operatorExclamation) {
-      left = make_node<unary_expr_t>(ast_node_t::eUnary,
-                                     {.op = TT::operatorExclamation, .value = left},
-                                     token.location);
-      continue;
-    }
-
-    // Save to restore location
-    auto op_token = token;
-
-    auto right = parse_expression(right_binding_power);
-    left = make_node<binop_expr_t>(ast_node_t::eBinop, {
-        .op = binop_type(op_token),
-        .left = left,
-        .right = right
-      }, {start, token.location.end});
-  }
-
-  left->location = {start, token.location.end};
-  return left;
-}
-
-SP<ast_node_t>
-P::parse_function_binding() {
-  // Variable bindings for functions.
-  // 1. name: !u8
-  // 2. var name: !u8
-  // 3. self <- pass by value (const bound)
-  // 4. !self <- pass by reference (const bound)
-  // 5. var self <- pass by value (mut bound)
-  // 6. var !self <- pass by reference (mut bound)
-  // 7. self: XYZ (overload self to only work on specific types)
-
-  auto node = std::make_shared<ast_node_t>();
-  auto start = token.location.start;
-
-  function_parameter_t arg;
-  if (maybe(TT::keywordVar)) {
-    arg.is_mutable = true;
-  }
-
-  // Shorthand self syntax
-  bool allow_implicit_type = false;
-  if (maybe(TT::operatorExclamation)) {
-    expect(TT::keywordSelf);
-    arg.is_self = true;
-    arg.is_self_ref = true; // Pass by reference
-    arg.name = "self";
-    allow_implicit_type = true;
-  } else if (maybe(TT::keywordSelf)) {
-    arg.is_self = true;
-    arg.is_self_ref = false; // Pass by value
-    arg.name = "self";
-    allow_implicit_type = true;
-  } else {
-    expect(TT::identifier);
-    arg.name = source.string(token.location);
-  }
-
-  if (allow_implicit_type == false) {
-    expect(TT::operatorColon);
-    arg.type = parse_type();
-  }
-
-  node->as.fn_param = new function_parameter_t(arg);
-  node->kind = ast_node_t::eFunctionParameter;
-  node->location = {start, token.location.end};
-  return node;
-}
-
-SP<ast_node_t>
-P::parse_binding() {
-  // Variable bindings for functions & structs.
-  // (var)? x: i32
-  auto node = std::make_shared<ast_node_t>();
-  declaration_t decl {};
-  auto start = token.location.start;
-
-  if (maybe(TT::keywordVar)) {
-    decl.is_mutable = true;
-  }
-
-  expect(TT::identifier);
-  decl.identifier = source.string(token.location);
-
-  expect(TT::operatorColon);
-  decl.type = parse_type();
-
-  node->location = {start, token.location.end};
-  node->as.declaration = new declaration_t(decl);
-  node->kind = ast_node_t::eDeclaration;
-  return node;
-}
-
-SP<ast_node_t>
-P::parse_variable_decl() {
-  // var/let x: i32 = 4;
-
-  auto node = std::make_shared<ast_node_t>();
-  declaration_t decl {};
-  expect_any({TT::keywordLet, TT::keywordVar}); // var/let
-
-  auto start = token.location.start;
-
-  if (token.type == TT::keywordLet) {
-    decl.is_mutable = false;
-  } else { // var
-    decl.is_mutable = true;
-  }
-
-  expect(TT::identifier); // x
-  decl.identifier = source.string(token.location);
-
-  if (maybe(TT::operatorColon)) { // i32
-    decl.type = parse_type();
-  }
-
-  if (maybe(TT::operatorEqual)) { // =
-    decl.value = parse_expression(); // Up until ;
-  }
-  expect(TT::delimiterSemicolon);
-
-  node->as.declaration = new declaration_t(decl);
-  node->kind = ast_node_t::eDeclaration;
-  node->location = {start, token.location.end};
-  return node;
-}
-
-SP<ast_node_t>
-P::parse_function_header() {
-  // fn <i32> stat (path: !u8, stat: !any)
-
-  auto header = std::make_shared<ast_node_t>();
-  function_decl_t fn {};
-
-  auto start = token.location.start;
-
-  expect(TT::keywordFn); // fn
-
-  // Push the current lexer state before trying to parse the type.
-  auto state = token;
-  lexer.push();
-  try {
-    // First try to parse with a typename
-    fn.type = parse_type();
-    //fn.name = parse_path();
-    auto path = parse_generic_path();
-
-    // Fully parsed with type info, we can throw away the lexer state
-    lexer.commit();
-  } catch (const parse_error_t &) {
-    // Pop the last diagnostics
-    diagnostics.messages.pop_back();
-
-    // Restore the lexer to before trying to parser the type.
-    lexer.pop();
-    token = state;
-    fn.type = nullptr;
-    fn.name = parse_generic_path();
-  }
-
-  expect(TT::delimiterLParen); // (
-
-  while (!peek(TT::delimiterRParen)) {
-    fn.parameters.push_back(parse_function_binding()); // path: !u8, stat: !any
-    if (!maybe(TT::operatorComma)) {
-      break;
-    }
-
-    // operatorRange is for varargs
-    if (maybe(TT::operatorRange)) {
-      fn.is_var_args = true;
-    }
-  }
-  expect(TT::delimiterRParen); // )
-
-  header->as.fn_decl = new function_decl_t(fn);
-  header->kind = ast_node_t::eFunctionDecl;
-  header->location = {start, token.location.end};
-  return header;
-}
-
-SP<ast_node_t>
-P::parse_extern_decl() {
-  auto ext = std::make_shared<ast_node_t>();
-  auto start = token.location.start;
-
-  extern_decl_t decl {};
-
-  expect(TT::keywordExtern);
-  expect(TT::literalString);
-
-  std::string convention = source.string(token.location);
-  decl.convention = convention;
-
-  // extern function decl
-  if (peek(TT::keywordFn)) {
-    decl.import = parse_function_header();
-    expect(TT::delimiterSemicolon);
-  }
-
-  ext->as.extern_decl = new extern_decl_t(decl);
-  ext->kind = ast_node_t::eExtern;
-  ext->location = {start, token.location.end};
-  return ext;
+  decl.name = parse_path();
+  return decl;
 }
 
 SP<ast_node_t>
 P::parse_return() {
-  auto node = std::make_shared<ast_node_t>();
-  auto start = token.location.start;
-
-  return_stmt_t ret;
   expect(TT::keywordReturn);
 
-  if (maybe(TT::delimiterSemicolon)) {
-    // return; <- void return
-    return make_node<return_stmt_t>(ast_node_t::eReturn, {.value = nullptr}, token.location);
-  }
-
-  ret.value = parse_expression();
-
-  expect(TT::delimiterSemicolon);
-  node->as.return_stmt = new return_stmt_t(ret);
-  node->kind = ast_node_t::eReturn;
-  node->location = {start, token.location.end};
-  return node;
-}
-
-SP<ast_node_t> P::parse_if() {
-  auto node = std::make_shared<ast_node_t>();
-  node->location = token.location;
-  node->kind = ast_node_t::eIf;
-
-  if_stmt_t *stmt = new if_stmt_t {};
-
-  expect(TT::keywordIf);
-  stmt->condition = parse_expression(0);
-
-  stmt->pass = parse_block();
-  if (maybe(TT::keywordElse)) {
-    // If the next operator is an {, parse it as a block
-    if (peek(TT::delimiterLBrace))
-      stmt->reject = parse_block();
-    else // Otherwise a statement
-      stmt->reject = parse_statement();
-    // This allows both
-    // ... } else return XYZ;
-    // and ... } else { ...
-  }
-
-  node->as.if_stmt = stmt;
-  return node;
-}
-
-range_expr_t P::parse_range() {
-  range_expr_t expr;
-  auto min = parse_primary();
-
-  expect(TT::operatorRange);
-  if (maybe(TT::operatorEqual)) {
-    expr.is_inclusive = true;
-  } else {
-    expr.is_inclusive = false;
-  }
-
-  auto max = parse_primary();
-  expr.min = min;
-  expr.max = max;
-  return expr;
-}
-
-SP<ast_node_t> P::parse_for() {
-  expect(TT::keywordFor);
-
-  expect(TT::identifier);
-  // Allowed formats:
-  // `for i in 0..10`
-  // `for i: i64 in 0..10`
-  // `for i: i32 = 0; i < 10; i += 1`
-  auto init = make_shared<ast_node_t>();
-  init->kind = ast_node_t::eDeclaration;
-
-  std::string init_identifier = source.string(token.location);
-  SP<ast_node_t> init_type = nullptr;
-  SP<ast_node_t> init_value = nullptr;
-
-  if (maybe(TT::operatorColon)) {
-    init_type = parse_type();
-  }
-
-  if (maybe(TT::operatorEqual)) {
-    init_value = parse_expression();
-  }
-
-  SP<ast_node_t> condition = nullptr;
-  SP<ast_node_t> action = nullptr;
-
-  if (maybe(TT::keywordIn)) {
-    // Shorthand syntax
-    range_expr_t range = parse_range();
-    init_value = range.min;
-    condition = make_node<binop_expr_t>(ast_node_t::eBinop, {.op = range.is_inclusive ? binop_type_t::eLTE : binop_type_t::eLT, .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = {{{init_identifier}}}}, token.location), .right = range.max}, token.location);
-
-    // TODO: Yuck... Make this better!
-    action = make_node<assign_expr_t>(ast_node_t::eAssignment, {
-        .where = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = {{{init_identifier}}}}, token.location),
-        .value = make_node<binop_expr_t>(ast_node_t::eBinop, {
-            .op = binop_type_t::eAdd,
-            .left = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = {{{init_identifier}}}}, token.location),
-            .right = make_node<literal_expr_t>(ast_node_t::eLiteral, {.value = "1", .type = literal_type_t::eInteger}, token.location)
-          },token.location)
-      }, token.location);
-  } else {
-    // Classic syntax
-  }
-
-  auto block = parse_block();
-
-  return make_node<for_stmt_t>(
-      ast_node_t::eFor,
-      {
-          .init = make_node<declaration_t>(ast_node_t::eDeclaration,
-                                           {.identifier = init_identifier,
-                                            .type = init_type,
-                                            .value = init_value,
-                                            .is_mutable = true},
-                                           token.location),
-          .condition = condition,
-          .action = action,
-          .body = block
-    }, token.location);
-}
-
-SP<ast_node_t> P::parse_while() {
-  expect(TT::keywordWhile);
-
   auto location = token.location;
-  auto condition = parse_expression();
-  auto body = parse_block();
 
-  return make_node<while_stmt_t>(ast_node_t::eWhile, {
-                                                         .condition = condition,
-                                                         .body = body
-    }, location);
+  return make_node<return_stmt_t>(ast_node_t::eReturn, {
+      .value = parse_expression()
+    }, location, source);
 }
 
-SP<ast_node_t> P::parse_statement() {
-  TT next = peek_any({TT::keywordIf, TT::keywordLet, TT::keywordVar, TT::keywordReturn, TT::keywordSelf, TT::operatorDot, TT::keywordFor, TT::keywordWhile, TT::identifier});
+std::vector<SP<ast_node_t>>
+P::parse_function_arguments() {
+  expect(TT::delimiterLParen);
 
-  switch (next) {
-  case TT::keywordLet: case TT::keywordVar:
-    return parse_variable_decl();
-  case TT::keywordReturn:
-    return parse_return();
-  case TT::identifier:
+  std::vector<SP<ast_node_t>> args;
+  while (!peek(TT::delimiterRParen)) {
+    args.emplace_back(parse_expression());
+
+    if (peek(TT::operatorComma)) {
+      // If we have a comma, consume it and carry on.
+      expect(TT::operatorComma);
+    }
+  }
+  expect(TT::delimiterRParen);
+  return args;
+}
+
+SP<ast_node_t>
+P::parse_expression(int min_binding_power, bool allow_struct_literal) {
+  auto start = token.location.start;
+  auto left = parse_primary(allow_struct_literal); // Pass flag to primary
+
+  while (true) {
+    auto next = lexer.peek();
+
+    // Stop if it's not an operator/call/brace
+    bool is_postfix_or_infix = is_operator(next.type) ||
+                               next.type == TT::delimiterLParen ||
+                               next.type == TT::delimiterLBrace ||
+                               next.type == TT::keywordAs;
+    if (!is_postfix_or_infix) break;
+
+    // Check for struct literals
+    if (next.type == TT::delimiterLBrace && !allow_struct_literal) {
+      break;
+    }
+
+    auto [left_binding, right_binding] = get_binding_power(next.type);
+    if (left_binding <= min_binding_power)
+      break;
+
+    // Consume the operator token (except for cases that handle it internally)
+    switch (next.type) {
+    case TT::delimiterLParen:
+      if (token.location.start.line != next.location.start.line) {
+        // Function calls do not work, if the callee is not on the same line.
+        return left;
+      }
+
+      left = make_node<call_expr_t>(ast_node_t::eCall, {
+          .callee = left,
+          .arguments = parse_function_arguments()
+        }, {start, token.location.end}, source);
+      break;
+    case TT::operatorDeref: // Postfix '.*'
+      expect(TT::operatorDeref);
+      left = make_node<deref_expr_t>(ast_node_t::eDeref, {.value = left}, token.location, source);
+      break;
+
+    case TT::keywordAs: // Cast 'as'
+      expect(TT::keywordAs);
+      left = make_node<cast_expr_t>(ast_node_t::eCast, {
+          .value = left,
+          .type = parse_type()
+        }, {start, token.location.end}, source);
+      break;
+
+     case TT::operatorEqual:
+      token = lexer.next();
+      left = make_node<assign_expr_t>(ast_node_t::eAssignment, {.where = left, .value = parse_expression()}, {start, token.location.end}, source);
+      continue;
+
+    case TT::operatorRange: {
+      token = lexer.next();
+      bool is_inclusive = maybe(TT::operatorEqual);
+      left = make_node<range_expr_t>(ast_node_t::eRangeExpr, {.min = left, .max = parse_expression(right_binding, allow_struct_literal), .is_inclusive = is_inclusive}, {start, token.location.end}, source);
+      continue;
+    }
+
+    case TT::delimiterLBrace: {
+      expect(TT::delimiterLBrace);
+      struct_expr_t init {};
+      init.type = left;
+      while (!maybe(TT::delimiterRBrace)) {
+        expect(TT::identifier);
+        auto member = source->string(token.location);
+        expect(TT::operatorColon);
+        init.values[member] = parse_expression(0, true); // Nested exprs can have structs
+      }
+      left = make_node<struct_expr_t>(ast_node_t::eStructExpr, init, {start, token.location.end}, source);
+      break;
+    }
+
+    default: {
+      token = lexer.next();
+      // Standard Binary Operator
+      left = make_node<binop_expr_t>(ast_node_t::eBinop, {
+          .op = binop_type(next),
+          .left = left,
+          .right = parse_expression(right_binding, allow_struct_literal)
+        }, {start, token.location.end}, source);
+      break;
+    }
+    }
+  }
+  return left;
+}
+
+SP<ast_node_t>
+P::parse_primary(bool allow_struct_literal) {
+  SP<ast_node_t> primary = nullptr;
+
+  auto next = lexer.peek();
+  switch (next.type) {
+  case TT::keywordMove:
+    expect(TT::keywordMove);
+    return make_node<move_expr_t>(ast_node_t::eMove, {parse_primary(allow_struct_literal)}, token.location, source);
   case TT::keywordSelf:
-  case TT::operatorDot: {
-    auto qty = parse_expression(0);
-    expect(TT::delimiterSemicolon);
-    return qty;
+  case TT::identifier:
+    primary = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = parse_path()}, token.location, source);
+    return primary;
+  case TT::literalInt:
+    expect(TT::literalInt);
+    primary = make_node<literal_expr_t>(
+        ast_node_t::eLiteral, {
+          .value = source->string(token.location),
+          .type = literal_type_t::eInteger,
+        }, token.location, source);
+    return primary;
+  case TT::literalString:
+    expect(TT::literalString);
+    primary = make_node<literal_expr_t>(
+      ast_node_t::eLiteral, {
+          .value = source->string(token.location),
+          .type = literal_type_t::eString,
+        }, token.location, source);
+    return primary;
+  case TT::literalFloat:
+    expect(TT::literalFloat);
+    primary = make_node<literal_expr_t>(
+        ast_node_t::eLiteral, {
+          .value = source->string(token.location),
+          .type = literal_type_t::eFloat,
+        }, token.location, source);
+    return primary;
+  case TT::literalBool:
+    expect(TT::literalBool);
+    primary = make_node<literal_expr_t>(
+        ast_node_t::eLiteral, {
+          .value = source->string(token.location),
+          .type = literal_type_t::eBool,
+        }, token.location, source);
+    return primary;
+  case TT::keywordNil: {
+    expect(TT::keywordNil);
+    primary = make_shared<ast_node_t>();
+    primary->kind = ast_node_t::eNil;
+    return primary;
   }
-  case TT::keywordIf:
-    return parse_if();
-
-  case TT::keywordFor:
-    return parse_for();
-
-  case TT::keywordWhile:
-    return parse_while();
-
+  case TT::delimiterLParen:
+    expect(TT::delimiterLParen);
+    primary = parse_expression(0, allow_struct_literal);
+    expect(TT::delimiterRParen);
   default:
-    assert(false && "Unhandled token in parse_statement");
+    break;
   }
 
+  if (is_operator(next.type)) {
+    token = lexer.next();
+    auto bp = get_unary_binding_power(next.type);
+
+    auto operand = parse_expression(bp, allow_struct_literal);
+
+    if (next.type == TT::operatorAnd) {
+      return make_node<addr_of_expr_t>(ast_node_t::eAddrOf, {.value = operand}, token.location, source);
+    }
+    return make_node<unary_expr_t>(ast_node_t::eUnary, {.op = next.type, .value = operand}, token.location, source);
+  }
+  return primary;
+}
+
+SP<ast_node_t>
+P::parse_if() {
+  expect(TT::keywordIf);
+  auto location = token.location;
+
+  if_stmt_t stmt{};
+  stmt.condition = parse_expression(0, false);
+  stmt.pass = parse_block();
+
+  if (maybe(TT::keywordElse)) {
+    stmt.reject = parse_block();
+  }
+
+  return make_node<if_stmt_t>(ast_node_t::eIf, stmt, location, source);
+}
+
+SP<ast_node_t>
+P::parse_for() {
+  expect(TT::keywordFor);
+  auto location = token.location;
+  for_stmt_t for_stmt {};
+
+  // 1. Check for "for i in" or "for i :="
+  // We look ahead to see if the first identifier is a loop variable
+  if (lexer.peek().type == TT::identifier &&
+      (lexer.peek(1).type == TT::keywordIn || lexer.peek(1).type == TT::operatorBind)) {
+    expect(TT::identifier);
+    for_stmt.init = make_node<declaration_t>(ast_node_t::eDeclaration, {.identifier = source->string(token.location), .value = make_node<literal_expr_t>(ast_node_t::eLiteral, {.value = "0", .type = literal_type_t::eInteger}, token.location, source), .is_mutable = true}, location, source);
+
+    if (maybe(TT::keywordIn)) {
+      // Case: for i in 0..num_files
+      for_stmt.condition = parse_expression(0, false);
+    } else if (maybe(TT::operatorBind)) {
+      // Case: for i := 0; i < n; i += 1
+      for_stmt.init = parse_expression(0, false);
+      expect(TT::delimiterSemicolon);
+      for_stmt.condition = parse_expression(0, false);
+      expect(TT::delimiterSemicolon);
+      for_stmt.action = parse_expression(0, true); // Post can usually allow structs
+    }
+  } else {
+    // Case: for 0..num_files
+    // No iterator name, just a range expression
+    for_stmt.condition = parse_expression(0, false);
+  }
+
+  // Parse the body
+  for_stmt.body = parse_block();
+  return make_node<for_stmt_t>(ast_node_t::eFor, for_stmt, location, source);
+}
+
+SP<ast_node_t>
+P::parse_while() {
+  expect(TT::keywordWhile);
+  while_stmt_t stmt{};
+  auto location = token.location;
+
+  stmt.condition = parse_expression(0, false);
+  stmt.body = parse_block();
+  return make_node<while_stmt_t>(ast_node_t::eWhile, stmt, location, source);
+}
+
+SP<ast_node_t>
+P::parse_defer() {
+  expect(TT::keywordDefer);
+  return make_node<defer_expr_t>(ast_node_t::eDefer, {parse_expression()}, token.location, source);
+}
+
+SP<ast_node_t>
+P::parse_statement() {
+  auto type = lexer.peek().type;
+
+  switch (type) {
+  case TT::keywordReturn: {
+    auto ret = parse_return();
+    maybe(TT::delimiterSemicolon);
+    return ret;
+  }
+  case TT::keywordIf: {
+    return parse_if();
+  }
+  case TT::keywordVar: {
+    return parse_runtime_binding();
+  }
+  case TT::keywordLet: {
+    return parse_runtime_binding();
+  }
+  case TT::keywordFor: {
+    return parse_for();
+  }
+  case TT::keywordWhile: {
+    return parse_while();
+  }
+  case TT::keywordDefer: {
+    return parse_defer();
+  }
+  default: {
+    // This is either:
+    //   A. Implicit return
+    //   B. Function call
+    //   C. Variable assignment
+    //
+    // In any case, all these are handled by parse_expression
+    auto expr = parse_expression();
+    maybe(TT::delimiterSemicolon);
+    return expr;
+  }
+  }
   return nullptr;
 }
 
 SP<ast_node_t>
 P::parse_block() {
-  auto node = std::make_shared<ast_node_t>();
-  block_node_t block {};
-  auto start = token.location.start;
-
   expect(TT::delimiterLBrace);
-  while (!maybe(TT::delimiterRBrace)) {
+
+  auto location = token.location;
+  block_node_t block;
+  while (!peek(TT::delimiterRBrace)) {
     block.body.push_back(parse_statement());
   }
 
-  node->location = {start, token.location.end};
-  node->kind = ast_node_t::eBlock;
-  node->as.block = new block_node_t(block);
-  return node;
+  expect(TT::delimiterRBrace);
+  return make_node<block_node_t>(ast_node_t::eBlock, block, location, source);
+}
+
+// Helper to parse a single parameter
+function_parameter_t P::parse_function_parameter() {
+    bool is_mutable = maybe(TT::keywordVar);
+    bool is_self_ref = maybe(TT::operatorExclamation);
+
+    expect_any({TT::identifier, TT::keywordSelf});
+    std::string name = source->string(token.location);
+    bool is_self = (token.type == TT::keywordSelf);
+
+    type_decl_t type {};
+    bool is_rvalue = false;
+
+    // 'self' can skip the colon and type
+    if (is_self && !peek(TT::operatorColon)) {
+        return {name, type, is_mutable, is_self, is_self_ref, is_rvalue};
+    }
+
+    expect(TT::operatorColon);
+    is_rvalue = maybe(TT::operatorXor);
+    type = parse_type();
+
+    return {name, type, is_mutable, is_self, is_self_ref, is_rvalue};
 }
 
 SP<ast_node_t>
-P::parse_function_decl() {
-  auto node = std::make_shared<ast_node_t>();
-  function_impl_t impl;
-  auto start = token.location.start;
+P::parse_function() {
+  expect(TT::keywordFn);
+  auto location = token.location;
+  function_decl_t decl {};
 
-  impl.declaration = parse_function_header();
-  impl.block = parse_block();
+  expect(TT::delimiterLParen);
 
-  function_decl_t *decl = impl.declaration->as.fn_decl;
+  // Parse parameter list
+  while (!peek(TT::delimiterRParen)) {
+    if (maybe(TT::operatorRange)) {
+      decl.is_var_args = true;
+      break; // Var-args is always the last parameter
+    }
 
-  node->as.fn_impl = new function_impl_t(impl);
-  node->kind = ast_node_t::eFunctionImpl;
-  node->location = {start, token.location.end};
-  if (decl->name.has_generic() == false) {
-    return node;
+    decl.parameters.push_back(parse_function_parameter());
+
+    if (!maybe(TT::operatorComma)) break;
+  }
+
+  expect(TT::delimiterRParen);
+
+  // Return type
+  if (maybe(TT::operatorArrow)) {
+    decl.return_type = parse_type();
   } else {
-    return make_node<template_decl_t>(ast_node_t::eTemplate,
-                                      {
-                                        .name = decl->name,
-                                        .tree = node
-                                      }, {start, token.location.end});
+    decl.return_type.name = {{{"void"}}};
   }
-}
 
-SP<ast_node_t>
-P::parse_struct_decl() {
-  auto node = std::make_shared<ast_node_t>();
-  struct_decl_t *decl = new struct_decl_t;
-
-  expect(TT::keywordStruct); // struct
-  auto start = token.location.start;
-
-  decl->name = parse_path();
-
-  expect(TT::delimiterLBrace); // {
-
-  // Members
-  while (!maybe(TT::delimiterRBrace)) { // }
-    decl->members.push_back(parse_binding());
-    expect(TT::delimiterSemicolon);
+  // Body vs Declaration
+  if (peek(TT::delimiterLBrace)) {
+    return make_node<function_impl_t>(
+      ast_node_t::eFunctionImpl, 
+      { .declaration = decl, .block = parse_block() }, 
+      location, source
+      );
   }
-  maybe(TT::delimiterSemicolon); // ;?
 
-  node->location = {start, token.location.end};
-  node->kind = ast_node_t::eStructDecl;
-  node->as.struct_decl = decl;
-  return node;
+  return make_node<function_decl_t>(ast_node_t::eFunctionDecl, decl, location, source);
 }
 
 SP<ast_node_t>
 P::parse_type_alias() {
+  type_alias_decl_t alias {};
+
+  auto location = token.location;
   expect(TT::keywordType);
-  bool is_distinct = maybe(TT::keywordDistinct);
 
-  auto node = std::make_shared<ast_node_t>();
-  node->location = token.location;
+  if (maybe(TT::keywordDistinct))
+    alias.is_distinct = true;
+  else
+    alias.is_distinct = false;
 
-  type_alias_decl_t *decl = new type_alias_decl_t{};
-  node->kind = ast_node_t::eTypeAlias;
-  node->as.alias_decl = decl;
+  alias.type = parse_type();
 
-  expect(TT::identifier);
-  decl->alias = source.string(token.location);
-
-  expect(TT::operatorEqual);
-
-  decl->is_distinct = is_distinct;
-  decl->type = parse_type();
-
-  expect(TT::delimiterSemicolon);
-
-  return node;
+  location.end = token.location.end;
+  return make_node<type_alias_decl_t>(ast_node_t::eTypeAlias, alias, location, source);
 }
 
 SP<ast_node_t>
-P::parse_attribute() {
+P::parse_struct() {
+  expect(TT::keywordStruct);
+  auto location = token.location;
+
+  expect(TT::delimiterLBrace);
+  struct_decl_t decl {};
+
+  while (!maybe(TT::delimiterRBrace)) {
+    expect(TT::identifier);
+    std::string member_name = source->string(token.location);
+
+    expect(TT::operatorColon);
+    type_decl_t type = parse_type();
+
+    decl.members.push_back({
+        .name = member_name,
+        .type = type
+      });
+  }
+  return make_node<struct_decl_t>(ast_node_t::eStructDecl, decl, location, source);
+}
+
+SP<ast_node_t>
+P::parse_contract() {
+  expect(TT::keywordContract);
+  contract_decl_t decl {};
+  auto location = token.location;
+
+  expect(TT::delimiterLBrace);
+
+  while (!maybe(TT::delimiterRBrace)) {
+    decl.requirements.push_back(parse_identifier());
+  }
+
+  return make_node<contract_decl_t>(ast_node_t::eContract, decl, location, source);
+}
+
+attribute_decl_t P::parse_attributes() {
+  attribute_decl_t decl{};
+
   expect(TT::operatorAt);
   expect(TT::delimiterLParen);
 
-  std::map<std::string, literal_expr_t> attributes;
   while (!maybe(TT::delimiterRParen)) {
-    expect(TT::identifier);
-    auto attr_name = source.string(token.location);
+    auto next = lexer.peek();
+    if (!is_keyword(next.type) && !is_identifier(next.type)) {
+      expect(TT::identifier);
+    }
+    token = lexer.next();
+    std::string name = source->string(token.location);
 
     expect(TT::operatorColon);
-    auto value = parse_primary();
 
-    if (value->kind != ast_node_t::eLiteral)
-      throw error(source, token.location, "Only literals are allowed on attributes");
+    expect_any({TT::literalBool, TT::literalInt, TT::literalFloat, TT::literalString});
+    switch (token.type) {
+    case TT::literalBool:
+      decl.attributes[name] = literal_expr_t{.value = source->string(token.location), .type = literal_type_t::eBool};
+      break;
+    case TT::literalInt:
+      decl.attributes[name] = literal_expr_t{.value = source->string(token.location), .type = literal_type_t::eInteger};
+      break;
+    case TT::literalFloat:
+      decl.attributes[name] = literal_expr_t{.value = source->string(token.location), .type = literal_type_t::eFloat};
+      break;
+    case TT::literalString:
+      decl.attributes[name] = literal_expr_t{.value = source->string(token.location), .type = literal_type_t::eString};
+      break;
+    default:
+      break;
+    }
 
-    attributes[attr_name] = *value->as.literal_expr;
+    maybe(TT::operatorComma);
+  }
+  return decl;
+}
+
+SP<ast_node_t>
+P::parse_binding() {
+  SP<ast_node_t> binding {nullptr};
+
+  std::optional<attribute_decl_t> attributes;
+  if (peek(TT::operatorAt)) {
+    attributes = parse_attributes();
   }
 
-  auto node = make_node<attribute_decl_t>(ast_node_t::eAttribute, {std::move(attributes)}, token.location);
+  if(peek(TT::keywordFn)) {
+    binding = parse_function();
+    goto done;
+  }
 
-  if (peek(TT::keywordFn))
-    node->as.attribute_decl->affect = parse_function_decl();
+  if (peek(TT::keywordType)) {
+    binding = parse_type_alias();
+    goto done;
+  }
 
-  if (peek(TT::keywordExtern))
-    node->as.attribute_decl->affect = parse_extern_decl();
+  if (peek(TT::keywordStruct)) {
+    binding = parse_struct();
+    goto done;
+  }
 
-  return node;
+  if (peek(TT::keywordContract)) {
+    binding = parse_contract();
+    goto done;
+  }
+
+  // Compile time expression
+  binding = parse_expression();
+  done:
+  if (attributes) {
+    attributes->affect = binding;
+    return make_node<attribute_decl_t>(ast_node_t::eAttribute, *attributes, token.location, source);
+  }
+  return binding;
+}
+
+SP<ast_node_t>
+P::parse_runtime_binding() {
+  declaration_t decl;
+
+  auto location = token.location;
+  if (maybe(TT::keywordVar))
+    decl.is_mutable = true;
+  else if (maybe(TT::keywordLet))
+    decl.is_mutable = false;
+
+  expect(TT::identifier);
+  location.end = token.location.end;
+  decl.identifier = source->string(token.location);
+
+  if (maybe(TT::operatorBind)) {
+    // Infer the type
+    decl.type = std::nullopt;
+    decl.value = parse_expression();
+  } else if (maybe(TT::operatorColon)) {
+    decl.type = parse_type();
+    if (maybe(TT::operatorEqual)) {
+      // Initialization
+      decl.value = parse_expression();
+    }
+  }
+  return make_node<declaration_t>(ast_node_t::eDeclaration, decl, location, source);
+}
+
+SP<ast_node_t>
+P::parse_identifier() {
+  peek_any({TT::identifier});
+  auto path = parse_path();
+
+  if (maybe(TT::operatorBind)) {
+    return make_node<binding_decl_t>(ast_node_t::eBinding, {path, parse_binding()}, token.location, source);
+  }
+
+  if (maybe(TT::operatorColon)) {
+    auto type = parse_type();
+    if (maybe(TT::operatorEqual))
+      return make_node<binding_decl_t>(ast_node_t::eBinding, {path, parse_binding(), type}, token.location, source);
+
+    return make_node<binding_decl_t>(ast_node_t::eBinding, {path, nullptr, type}, token.location, source);
+  }
+  return nullptr;
+}
+
+path_t
+P::parse_import() {
+  expect(TT::keywordImport);
+  return parse_path();
 }
 
 translation_unit_t
@@ -966,28 +776,17 @@ P::parse() {
   // Parse until EOF reached
   while (!lexer.eof()) {
     if (lexer.peek().type == TT::specialEof) break;
-    TT next_type = peek_any({ TT::keywordFn, TT::keywordExtern, TT::keywordStruct, TT::keywordDistinct, TT::keywordType, TT::operatorAt });
 
-    switch (next_type) {
-    case TT::keywordFn:
-      tu.declarations.push_back(parse_function_decl());
-      continue;
-    case TT::keywordExtern:
-      tu.declarations.push_back(parse_extern_decl());
-      continue;
-    case TT::keywordStruct:
-      tu.declarations.push_back(parse_struct_decl());
-      continue;
-    case TT::keywordType:
-    case TT::keywordDistinct:
-      tu.declarations.push_back(parse_type_alias());
-      continue;
-    case TT::operatorAt: //< Attribute, branches to parse_function_decl, or parse_extern
-      tu.declarations.push_back(parse_attribute());
+    switch (lexer.peek().type) {
+    case TT::identifier:
+      tu.declarations.push_back(parse_identifier());
+      break;
+    case TT::keywordImport:
+      tu.imports.push_back(parse_import());
       break;
     default:
-      assert(false && "Unhandled Token Type");
-      continue;
+      assert(false && "Unhandled parse identifier");
+      break;
     }
   }
 
@@ -998,37 +797,37 @@ P::parse() {
   return tu;
 }
 
-binop_type_t
-P::binop_type(const token_t &tok) {
+binop_type_t P::binop_type(const token_t &tok) {
+  using BT = binop_type_t;
   switch (tok.type) {
   case TT::operatorPlus:
-    return binop_type_t::eAdd;
+    return BT::eAdd;
   case TT::operatorMinus:
-    return binop_type_t::eSubtract;
-  case TT::operatorMultiply:
-    return binop_type_t::eMultiply;
+    return BT::eSubtract;
   case TT::operatorDivide:
-    return binop_type_t::eDivide;
+    return BT::eDivide;
+  case TT::operatorMultiply:
+    return BT::eMultiply;
   case TT::operatorBooleanAnd:
-    return binop_type_t::eAnd;
+    return BT::eAnd;
   case TT::operatorBooleanOr:
-    return binop_type_t::eOr;
+    return BT::eOr;
   case TT::operatorEquality:
-    return binop_type_t::eEqual;
+    return BT::eEqual;
   case TT::operatorNotEqual:
-    return binop_type_t::eNotEqual;
+    return BT::eNotEqual;
   case TT::delimiterLAngle:
-    return binop_type_t::eLT;
+    return BT::eLT;
   case TT::delimiterRAngle:
-    return binop_type_t::eGT;
-  case TT::operatorLTE:
-    return binop_type_t::eLTE;
+    return BT::eGT;
   case TT::operatorGTE:
-    return binop_type_t::eGTE;
+    return BT::eGTE;
+  case TT::operatorLTE:
+    return BT::eLTE;
   case TT::operatorMod:
-    return binop_type_t::eMod;
+    return BT::eMod;
   default:
-    assert(false && "Invalid token type on parser_t::binop_type");
+    assert(false && "Invalid binop token");
   }
 }
 

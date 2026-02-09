@@ -1,0 +1,90 @@
+fd := type distinct i32
+socket := type fd
+
+linux.accept    := /*@(extern: "C", import: "accept")    */ fn (_: socket, addr: var !any, addrlen: var !any)
+linux.socket    := /*@(extern: "C", import: "socket")    */ fn (domain: i32, ty: i32, protocol: i32) -> socket
+linux.bind      := /*@(extern: "C", import: "bind")      */ fn (_: socket, addr: !any, addrlen: /*u64*/i32)
+libc.read       := /*@(extern: "C", import: "read")      */ fn (_: fd, dest: var !u8, count: u64) -> i64
+linux.inet_pton := /*@(extern: "C", import: "inet_pton") */ fn (af: i32, src: []u8, dst: var !any) -> i32
+libc.printf     := /*@(extern: "C", import: "printf")    */ fn (_: !u8, ..)
+
+sys.AF_UNSPEC      : i32 = 0 /* Unspecified.  */
+sys.AF_LOCAL       : i32 = 1 /* Local to host (pipes and file-domain).  */
+sys.AF_UNIX             := sys.AF_LOCAL /* POSIX name for PF_LOCAL.  */
+sys.AF_FILE             := sys.AF_LOCAL /* POSIX name for PF_LOCAL.  */
+sys.AF_INET        : i32 = 2 /* IP protocol family.  */
+sys.AF_AX25        : i32 = 3 /* Amateur Radio AX.25.  */
+sys.AF_IPX         : i32 = 4 /* Novell Internet Protocol.  */
+sys.AF_APPLETALK   : i32 = 5 /* Appletalk DDP.  */
+sys.AF_NETROM      : i32 = 6 /* Amateur radio NetROM.  */
+sys.AF_BRIDGE      : i32 = 7 /* Multiprotocol bridge.  */
+sys.AF_ATMPVC      : i32 = 8 /* ATM PVCs.  */
+sys.AF_X25         : i32 = 9 /* Reserved for X.25 project.  */
+sys.AF_INET6       : i32 = 10 /* IP version 6.  */
+sys.AF_ROSE        : i32 = 11 /* Amateur Radio X.25 PLP.  */
+sys.AF_DECnet      : i32 = 12 /* Reserved for DECnet project.  */
+sys.AF_NETBEUI     : i32 = 13 /* Reserved for 802.2LLC project.  */
+sys.AF_SECURITY    : i32 = 14 /* Security callback pseudo AF.  */
+sys.AF_KEY         : i32 = 15 /* PF_KEY key management API.  */
+sys.AF_NETLINK     : i32 = 16
+sys.AF_ROUTE            := sys.AF_NETLINK /* Alias to emulate 4.4BSD.  */
+sys.AF_PACKET      : i32 = 17 /* Packet family.  */
+sys.AF_ASH         : i32 = 18 /* Ash.  */
+sys.AF_ECONET      : i32 = 19 /* Acorn Econet.  */
+sys.AF_ATMSVC      : i32 = 20 /* ATM SVCs.  */
+sys.AF_RDS         : i32 = 21 /* RDS sockets.  */
+sys.AF_SNA         : i32 = 22 /* Linux SNA Project */
+sys.AF_IRDA        : i32 = 23 /* IRDA sockets.  */
+sys.AF_PPPOX       : i32 = 24 /* PPPoX sockets.  */
+sys.AF_WANPIPE     : i32 = 25 /* Wanpipe API sockets.  */
+sys.AF_LLC         : i32 = 26 /* Linux LLC.  */
+sys.AF_IB          : i32 = 27 /* Native InfiniBand address.  */
+sys.AF_MPLS        : i32 = 28 /* MPLS.  */
+sys.AF_CAN         : i32 = 29 /* Controller Area Network.  */
+sys.AF_TIPC        : i32 = 30 /* TIPC sockets.  */
+sys.AF_BLUETOOTH   : i32 = 31 /* Bluetooth sockets.  */
+sys.AF_IUCV        : i32 = 32 /* IUCV sockets.  */
+sys.AF_RXRPC       : i32 = 33 /* RxRPC sockets.  */
+sys.AF_ISDN        : i32 = 34 /* mISDN sockets.  */
+sys.AF_PHONET      : i32 = 35 /* Phonet sockets.  */
+sys.AF_IEEE802154  : i32 = 36 /* IEEE 802.15.4 sockets.  */
+sys.AF_CAIF        : i32 = 37 /* CAIF sockets.  */
+sys.AF_ALG         : i32 = 38 /* Algorithm sockets.  */
+sys.AF_NFC         : i32 = 39 /* NFC sockets.  */
+sys.AF_VSOCK       : i32 = 40 /* vSockets.  */
+sys.AF_KCM         : i32 = 41 /* Kernel Connection Multiplexor.  */
+sys.AF_QIPCRTR     : i32 = 42 /* Qualcomm IPC Router.  */
+sys.AF_SMC         : i32 = 43 /* SMC sockets.  */
+sys.AF_XDP         : i32 = 44 /* XDP sockets.  */
+sys.AF_MCTP        : i32 = 45 /* Management component transport protocol.  */
+
+sys.SOCK_STREAM := 1
+sys.SOCK_DGRAM := 2
+sys.SOCK_RAW := 3
+sys.SOCK_RDM := 4
+sys.SOCK_SEQPACKET := 5
+sys.SOCK_DCCP := 6
+sys.SOCK_PACKET := 10
+
+linux.sockaddr := struct {
+  pad: [128]u8
+}
+
+main := fn (argc: i32) {
+  let socket := linux.socket(sys.AF_INET, sys.SOCK_STREAM, 0)
+
+  var address: linux.sockaddr
+  linux.inet_pton(sys.AF_INET, "127.0.0.1", &address)
+  linux.bind(socket, &address, 4)
+
+  var data: [4096]u8
+  while true {
+    var clientaddr_len: u64 = zero
+    var clientaddr: linux.sockaddr = zero
+    let client := linux.accept(socket, &clientaddr, &clientaddr_len)
+
+    let bytes := libc.read(socket, data, data.size)
+    libc.printf("Read %lli bytes\n", bytes)
+  }
+}
+

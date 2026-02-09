@@ -5,40 +5,53 @@
 #include <format>
 #include <memory>
 
-type_registry_t::type_registry_t() {
-  add_builtin("void", 0, 0, type_kind_t::eVoid);
+type_registry_t::type_registry_t(type_registry_t *parent_)
+  : parent(parent_) {
+  if (parent == nullptr) {
+    add_builtin({{{"void"}}}, 0, 0, type_kind_t::eVoid);
 
-  // Only allowed as pointer
-  add_builtin("any", 0, 0, type_kind_t::eVoid);
+    // Only allowed as pointer
+    add_builtin({{{"any"}}}, 0, 0, type_kind_t::eVoid);
 
-  // Integers
-  add_builtin("i8", 1 * 8, 1, type_kind_t::eInt);
-  add_builtin("u8", 1 * 8, 1, type_kind_t::eUint);
+    // Integers
+    add_builtin({{{"i8"}}}, 1 * 8, 1, type_kind_t::eInt);
+    add_builtin({{{"u8"}}}, 1 * 8, 1, type_kind_t::eUint);
 
-  add_builtin("i16", 2 * 8, 2, type_kind_t::eInt);
-  add_builtin("u16", 2 * 8, 2, type_kind_t::eUint);
+    add_builtin({{{"i16"}}}, 2 * 8, 2, type_kind_t::eInt);
+    add_builtin({{{"u16"}}}, 2 * 8, 2, type_kind_t::eUint);
 
-  add_builtin("i32", 4 * 8, 4, type_kind_t::eInt);
-  add_builtin("u32", 4 * 8, 4, type_kind_t::eUint);
-
-  add_builtin("i64", 8 * 8, 8, type_kind_t::eInt);
-  add_builtin("u64", 8 * 8, 8, type_kind_t::eUint);
-
-  // Floats
-  add_builtin("f32", 4 * 8, 4, type_kind_t::eFloat);
-  add_builtin("f64", 8 * 8, 8, type_kind_t::eFloat);
-
-  // Bool
-  add_builtin("bool", 1, 1, type_kind_t::eBool);
+    add_builtin({{{"i32"}}}, 4 * 8, 4, type_kind_t::eInt);
+    add_builtin({{{"u32"}}}, 4 * 8, 4, type_kind_t::eUint);
+    add_builtin({{{"i64"}}}, 8 * 8, 8, type_kind_t::eInt);
+    add_builtin({{{"u64"}}}, 8 * 8, 8, type_kind_t::eUint);
+    add_builtin({{{"f32"}}}, 4 * 8, 4, type_kind_t::eFloat);
+    add_builtin({{{"f64"}}}, 8 * 8, 8, type_kind_t::eFloat);
+    add_builtin({{{"bool"}}}, 1, 1, type_kind_t::eBool);
+  }
 }
 
 SP<type_t> type_registry_t::resolve(const std::string &name) {
-  if (registry.contains(name))
-    return registry.at(name);
+  if (registry.contains(name)) {
+    auto ty = registry.at(name);
+    if (ty->kind == type_kind_t::eAlias) {
+      if (ty->as.alias->is_transparent) {
+        return ty->as.alias->alias;
+      }
+    }
+    return ty;
+  }
+
+  else if (parent)
+    return parent->resolve(name);
   return nullptr;
 }
 
-SP<type_t> type_registry_t::add_builtin(const std::string &name,
+SP<type_t> type_registry_t::resolve(const path_t &path) {
+  std::string name = to_string(path);
+  return resolve(name);
+}
+
+SP<type_t> type_registry_t::add_builtin(const path_t &name,
                                         size_t size,
                                         size_t alignment,
                                         type_kind_t kind) {
@@ -47,7 +60,7 @@ SP<type_t> type_registry_t::add_builtin(const std::string &name,
   t->size = size;
   t->alignment = alignment;
   t->kind = kind;
-  registry[name] = t;
+  registry[to_string(name)] = t;
   return t;
 }
 
@@ -70,7 +83,7 @@ SP<type_t> type_registry_t::add_function(
 
   // Serialize into a name
   std::stringstream ss;
-  ss << "fn <" << to_string(return_type) << "> (";
+  ss << "fn (";
 
   for (auto i = 0; i < arguments.size(); i++) {
     ss << to_string(arguments[i]);
@@ -79,18 +92,22 @@ SP<type_t> type_registry_t::add_function(
 
   ss << ")";
 
+  if (return_type) {
+    ss << " -> " << to_string(return_type);
+  }
+
   // Set the name
-  t->name = ss.str();
+  t->name = {{{ss.str()}}};
 
   // Use zero size for type, this can't be allocated anyhow
   t->size = 0;
   t->alignment = 0;
 
-  registry[t->name] = t;
+  registry[to_string(t->name)] = t;
   return t;
 }
 
-SP<type_t> type_registry_t::add_struct(const std::string &name,
+SP<type_t> type_registry_t::add_struct(const path_t &name,
                                        struct_layout_t layout) {
   auto type = std::make_shared<type_t>();
   type->size = layout.size;
@@ -100,11 +117,25 @@ SP<type_t> type_registry_t::add_struct(const std::string &name,
   type->as.struct_layout = new struct_layout_t(std::move(layout));
   type->name = name;
 
-  registry[name] = type;
+  registry[to_string(name)] = type;
   return type;
 }
 
-SP<type_t> type_registry_t::add_alias(const std::string &name,
+SP<type_t>
+type_registry_t::add_contract(const path_t &name, const std::map<std::string, SP<type_t>> &requirements) {
+  auto type = std::make_shared<type_t>();
+  type->size = (1 + requirements.size() * sizeof(void*)) * 8;
+  type->alignment = 8;
+
+  type->kind = type_kind_t::eContract;
+  type->as.contract = new contract_t(requirements);
+  type->name = name;
+
+  registry[to_string(name)] = type;
+  return type;
+}
+
+SP<type_t> type_registry_t::add_alias(const path_t &name,
                                       SP<type_t> alias,
                                       bool is_distinct) {
   auto type = std::make_shared<type_t>();
@@ -118,7 +149,25 @@ SP<type_t> type_registry_t::add_alias(const std::string &name,
   type->as.alias = alias_decl;
   type->name = name;
 
-  registry[name] = type;
+  registry[to_string(name)] = type;
+  return type;
+}
+
+SP<type_t> type_registry_t::add_template_alias(const path_t &name,
+                                      SP<type_t> alias) {
+  auto type = std::make_shared<type_t>();
+  type->size = size_of(alias);
+  type->alignment = alignment_of(alias);
+
+  type_alias_t *alias_decl = new type_alias_t {};
+  alias_decl->alias = alias;
+  alias_decl->is_transparent = true;
+
+  type->kind = type_kind_t::eAlias;
+  type->as.alias = alias_decl;
+  type->name = name;
+
+  registry[to_string(name)] = type;
   return type;
 }
 
@@ -168,4 +217,34 @@ type_registry_t::slice_of(SP<type_t> base,
 
   registry[to_string(type)] = type;
   return type;
+}
+
+SP<type_t> type_registry_t::self_placeholder(const path_t& owner_name) {
+  auto t = std::make_shared<type_t>();
+  t->kind = eSelf;
+  t->name = owner_name;
+  t->name.segments.push_back({"self"});
+  return t;
+}
+
+SP<type_t>
+type_registry_t::rvalue_of(SP<type_t> base) {
+  auto type = std::make_shared<type_t>();
+  type->size = base->size;
+  type->alignment = base->alignment;
+
+  rvalue_reference_t *rvalue = new rvalue_reference_t {};
+  rvalue->base = base;
+
+  type->kind = type_kind_t::eRValueReference;
+  type->as.rvalue = rvalue;
+  type->name = base->name;
+
+  registry[to_string(type)] = type;
+  return type;
+}
+
+void
+type_registry_t::merge(const type_registry_t &other) {
+  registry.insert(other.registry.begin(), other.registry.end());
 }

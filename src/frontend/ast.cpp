@@ -5,6 +5,17 @@
 #include <sstream>
 #include <string>
 
+SP<ast_node_t> make_node(ast_node_t::kind_t kind, source_location_t loc, SP<source_t> source) {
+  auto node = std::make_shared<ast_node_t>();
+
+  node->kind = kind;
+  node->location = loc;
+  node->as.raw = nullptr;
+  node->source = source;
+
+  return node;
+}
+
 void ast_node_t::reset() {
   switch (kind) {
   case eType: delete as.type; break;
@@ -31,7 +42,10 @@ void ast_node_t::reset() {
   case eAttribute: delete as.attribute_decl; break;
   case eFor: delete as.for_stmt; break;
   case eWhile: delete as.while_stmt; break;
-  case eTemplate: delete as.template_decl; break;
+  case eBinding: delete as.binding_decl; break;
+  case eStructExpr: delete as.struct_expr; break;
+  case eRangeExpr: delete as.range_expr; break;
+  case eContract: delete as.contract_decl; break;
   case eSelf:
   case eInvalid:
     break;
@@ -51,21 +65,49 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
 
   std::cout << indent();
   switch (node.kind) {
+  case ast_node_t::eStructExpr: {
+    struct_expr_t *expr = node.as.struct_expr;
+    std::cout << "[Struct "; dump_ast(*expr->type, indent_val);
+    std::cout << "\n";
+    for (auto &[memb, val] : expr->values) {
+      std::cout << indent() << "  " << memb << ": ";
+      dump_ast(*val, 0);
+      std::cout << "\n";
+    }
+    std::cout << "]";
+    return;
+  }
+  case ast_node_t::eWhile: {
+    while_stmt_t *stmt = node.as.while_stmt;
+    std::cout << "[While ";
+    dump_ast(*stmt->condition, indent_val + 1);std::cout << "\n";
+    dump_ast(*stmt->body, indent_val + 1);
+    std::cout <<indent()<<"]\n";
+    return;
+  }
+  case ast_node_t::eBinding: {
+    binding_decl_t *decl = node.as.binding_decl;
+
+    std::cout << "[Bind " << to_string(decl->name) << "\n";
+    dump_ast(*decl->value, indent_val + 1);
+    std::cout << "]\n";
+    return;
+  }
   case ast_node_t::eCast: {
     cast_expr_t *expr = node.as.cast;
     std::cout << "[Cast ";
     dump_ast(*expr->value, 0);
     std::cout << " into ";
-    dump_ast(*expr->type, 0);
+    std::cout << to_string(expr->type);
     std::cout << "]";
     return;
   }
   case ast_node_t::eFor: {
     for_stmt_t *stmt = node.as.for_stmt;
     std::cout << "[For\n";
-    std::cout << indent(); dump_ast(*stmt->init, indent_val+1); std::cout << "\n";
-    std::cout << indent(); dump_ast(*stmt->condition, indent_val+1); std::cout << "\n";
-    std::cout << indent(); dump_ast(*stmt->action, indent_val+1); std::cout << "\n";
+    if (stmt->init) {std::cout << indent(); dump_ast(*stmt->init, indent_val+1); std::cout << "\n";}
+    if (stmt->condition) {std::cout << indent(); dump_ast(*stmt->condition, indent_val+1); std::cout << "\n";}
+    if (stmt->action) {std::cout << indent(); dump_ast(*stmt->action, indent_val+1); std::cout << "\n";}
     std::cout << indent(); dump_ast(*stmt->body, indent_val+2); std::cout << "\n";
     std::cout << "]\n";
     return;
@@ -88,26 +130,6 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
     std::cout << "[Assign \n";
     dump_ast(*expr->where, indent_val + 1);std::cout << "\n";
     dump_ast(*expr->value, indent_val+1);
-    std::cout << "]\n";
-    return;
-  }
-  case ast_node_t::eFunctionParameter: {
-
-    function_parameter_t *param = node.as.fn_param;
-
-    std::cout << "[Declare ";
-    std::cout << param->name;
-    std::cout << " <";
-    if (param->is_mutable) {
-      std::cout << "var ";
-    }
-
-    if (param->type)
-      dump_ast(*param->type);
-    else
-      std::cout << "self";
-
-    std::cout << ">";
     std::cout << "]\n";
     return;
   }
@@ -227,7 +249,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
       std::cout << "var ";
     }
     if (decl.type)
-      dump_ast(*decl.type);
+      std::cout << to_string(*decl.type);
     else
       std::cout << "infer";
     std::cout << ">";
@@ -250,7 +272,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   }
   case ast_node_t::eFunctionImpl: {
     auto &impl = *node.as.fn_impl;
-    std::cout << "[Function (Signature: "; dump_ast(*impl.declaration, 0); std::cout <<")\n";
+    std::cout << "[Function \n";
 
     dump_ast(*impl.block, indent_val + 1);
 
@@ -259,18 +281,15 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   }
   case ast_node_t::eFunctionDecl: {
     auto &decl = *node.as.fn_decl;
-    std::cout << "fn ";
+    std::cout << "fn (";
 
-    if (decl.type) {
-      std::cout<<" <"; dump_ast(*decl.type); std::cout << "> ";
-    }
-
-    std::cout << to_string(decl.name) << "(";
     for (auto i = 0; i < decl.parameters.size(); ++i) {
-      dump_ast(*decl.parameters[i]);
+      std::cout << decl.parameters[i].name << ": " << to_string(decl.parameters[i].type);
+
       if (i < decl.parameters.size() - 1) std::cout << ", ";
     }
     std::cout << ")";
+    std::cout<<" -> "; to_string(decl.return_type);
     return;
   }
   case ast_node_t::eStructDecl: {
@@ -278,15 +297,15 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
 
     std::cout << "[Struct " << decl->name << "\n";
     for (auto &memb : decl->members) {
-      dump_ast(*memb, indent_val+1);
+      std::cout << indent() << "  [" << memb.name << " of " << to_string(memb.type) << "]\n";
     }
     std::cout << "]\n";
     return;
   }
   case ast_node_t::eTypeAlias: {
     type_alias_decl_t *decl = node.as.alias_decl;
-    std::cout << "[Alias " << decl->alias << (decl->is_distinct ? " (opaque)" : "") << " -> ";
-    dump_ast(*decl->type, 0);
+    std::cout << "[Alias " << (decl->is_distinct ? " (opaque)" : "") << " -> ";
+    std::cout << to_string(decl->type);
     std::cout << "]\n";
     return;
   }

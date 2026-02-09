@@ -4,6 +4,7 @@
 #include <vector>
 #include <format>
 #include <optional>
+#include <memory>
 
 #include "frontend/source.hpp"
 
@@ -17,7 +18,7 @@ struct diagnostic_t {
     detail, // Expected X got Y
     suggestion; // Did you mean ...
 
-  const source_t &source;
+  std::shared_ptr<source_t> source;
   source_location_t origin; //< What triggered the diagnostic
 };
 
@@ -27,13 +28,13 @@ struct diagnostic_stack_t {
 
 #define fmt(...) std::format(__VA_ARGS__)
 
-diagnostic_t warn(const source_t &source,
+diagnostic_t warn(std::shared_ptr<source_t> source,
                   source_location_t,
                   const std::string &message,
                   std::string detail = "",
                   std::string suggestion = "");
 
-diagnostic_t error(const source_t &source,
+diagnostic_t error(std::shared_ptr<source_t> source,
                    source_location_t,
                    const std::string &message,
                    std::string detail = "",

@@ -7,22 +7,23 @@
 #include <cstddef>
 #include <functional>
 #include <string_view>
+#include <memory>
 #include <string>
 
 struct lexer_t {
 public:
-  lexer_t(source_t &source)
+  lexer_t(std::shared_ptr<source_t> source)
       : source(source),
         token() {}
 
   token_t next();
-  token_t peek();
+  token_t peek(int delta = 0);
   bool eof() const;
 
   void push();
   void pop();
   void commit();
 private:
-  source_t &source;
+  std::shared_ptr<source_t> source;
   token_t token;
 };

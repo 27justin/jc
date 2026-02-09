@@ -36,7 +36,10 @@ struct source_t {
   source_t(std::string_view, const std::string &);
   source_t(const std::string &, const std::string &);
   source_t(const char *, const std::string &);
+  source_t(const source_t &);
   ~source_t();
+
+  static source_t from_file(const std::string &path);
 private:
   // Find offset from `start` to the N-th \n character
   int64_t find_line(int64_t) const;

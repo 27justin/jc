@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
       raw << stream.rdbuf();
       std::string source = raw.str();
 
-      source_t src(source, argv[1]);
+      auto src = std::make_shared<source_t>(source, argv[1]);
       lexer_t lexer(src);
 
       // while (!lexer.eof()) {
@@ -37,13 +37,13 @@ int main(int argc, char **argv) {
         analyzer_t analyzer(src);
         auto su = analyzer.analyze(tu);
 
-        for (auto &node : su.unit.declarations) {
-          dump_ast(*node);
-        }
+        // for (auto &node : su.unit.declarations) {
+        //   dump_ast(*node);
+        // }
 
-        codegen_t codegen(std::move(su));
-        codegen.generate();
-        codegen.compile_to_object(file.replace_extension("").filename());
+        // codegen_t codegen(std::move(su));
+        // codegen.generate();
+        // codegen.compile_to_object(file.replace_extension("").filename());
       } catch (const parse_error_t &err) {
         for (auto &msg : err.diagnostics.messages) {
           std::cerr << serialize(msg) << "\n";

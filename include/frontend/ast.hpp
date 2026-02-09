@@ -4,8 +4,10 @@
 #include <string>
 #include <memory>
 #include <map>
+#include <optional>
 
 #include "frontend/path.hpp"
+#include "frontend/source.hpp"
 #include "frontend/token.hpp"
 #include "backend/type.hpp"
 
@@ -52,8 +54,13 @@ struct type_alias_decl_t;
 struct cast_expr_t;
 struct deref_expr_t;
 struct attribute_decl_t;
-struct template_decl_t;
-
+struct binding_decl_t;
+struct struct_expr_t; // Struct initialization
+struct struct_member_t;
+struct range_expr_t;
+struct contract_decl_t;
+struct defer_expr_t;
+struct move_expr_t;
 struct assign_expr_t;
 
 struct member_access_expr_t;
@@ -64,7 +71,7 @@ struct ast_node_t {
   ~ast_node_t();
   void reset();
 
-  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor, eWhile, eTemplate } kind;
+  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor, eWhile, eBinding, eStructExpr, eRangeExpr, eContract, eDefer, eMove } kind;
   struct {
     union {
       type_decl_t *type;
@@ -91,29 +98,39 @@ struct ast_node_t {
       attribute_decl_t *attribute_decl;
       for_stmt_t *for_stmt;
       while_stmt_t *while_stmt;
-      template_decl_t *template_decl;
+      binding_decl_t *binding_decl;
+      struct_expr_t *struct_expr;
+      range_expr_t *range_expr;
+      contract_decl_t *contract_decl;
+      defer_expr_t *defer_expr;
+      move_expr_t *move_expr;
       void *raw;
     };
   } as;
   source_location_t location;
   SP<type_t> type; //< Type for code generation
+  SP<source_t> source; //< Source file this node is from
 };
 
 struct type_decl_t {
   // !u8
   path_t name; //< u8
   std::vector<pointer_kind_t> indirections;
-  bool is_mutable; //< is_mutable = var !/?, only applicable to pointers
+  bool is_mutable; //< is_mutable = var !/?, only applicable to pointers & slices
 
   bool is_slice = false;
-  size_t len; //< Stack array if > 0
+  SP<ast_node_t> len; //< Stack array if not nullptr
+};
+
+struct contract_decl_t {
+  std::vector<SP<ast_node_t>> requirements;
 };
 
 struct declaration_t {
   // let x: i32 = 1;
   // x: i32;
   std::string identifier; //< x
-  SP<ast_node_t> type; //< i32
+  std::optional<type_decl_t> type; //< i32
   SP<ast_node_t> value; //< 1
   bool is_mutable; //< let/var, default = false
 };
@@ -141,7 +158,7 @@ struct symbol_expr_t {
 struct struct_decl_t {
   // struct name { name: !u8; age: i32; };
   std::string name;
-  std::vector<SP<ast_node_t>> members;
+  std::vector<struct_member_t> members;
 };
 
 struct block_node_t {
@@ -149,17 +166,19 @@ struct block_node_t {
 };
 
 struct function_decl_t {
-  // fn <i32> stat(file: !u8, statbuf: !any)
-  path_t name; //< stat
-  SP<ast_node_t> type; //< i32
-  std::vector<std::string> template_params;
-  std::vector<SP<ast_node_t>> parameters; //< file: !u8, statbuf: !any
+  type_decl_t return_type; //< i32
+  std::vector<function_parameter_t> parameters; //< file: !u8, statbuf: !any
   bool is_var_args = false;
-  bool is_generic = false;
+};
+
+struct binding_decl_t {
+  path_t name;
+  SP<ast_node_t> value;
+  std::optional<type_decl_t> type;
 };
 
 struct function_impl_t {
-  SP<ast_node_t> declaration;
+  function_decl_t declaration;
   SP<ast_node_t> block;
 };
 
@@ -201,10 +220,11 @@ struct self_decl_t {
 
 struct function_parameter_t {
   std::string name;
-  SP<ast_node_t> type;
+  type_decl_t type;
   bool is_mutable = false;
   bool is_self = false;
   bool is_self_ref = false;
+  bool is_rvalue = false;
 };
 
 struct if_stmt_t {
@@ -214,14 +234,13 @@ struct if_stmt_t {
 };
 
 struct type_alias_decl_t {
-  std::string alias;
-  SP<ast_node_t> type;
+  type_decl_t type;
   bool is_distinct;
 };
 
 struct cast_expr_t {
   SP<ast_node_t> value;
-  SP<ast_node_t> type;
+  type_decl_t type;
 };
 
 struct assign_expr_t {
@@ -255,9 +274,22 @@ struct range_expr_t {
   bool is_inclusive;
 };
 
-struct template_decl_t {
-  path_t name;
-  SP<ast_node_t> tree;
+struct struct_member_t {
+  std::string name;
+  type_decl_t type;
+};
+
+struct struct_expr_t {
+  SP<ast_node_t> type;
+  std::map<std::string, SP<ast_node_t>> values;
+};
+
+struct defer_expr_t {
+  SP<ast_node_t> action;
+};
+
+struct move_expr_t {
+  SP<ast_node_t> symbol;
 };
 
 std::string to_string(const type_decl_t &);
@@ -266,10 +298,14 @@ void dump_ast(ast_node_t &, size_t indent = 0);
 
 template <typename Data>
 SP<ast_node_t>
-make_node(ast_node_t::kind_t kind, Data data, source_location_t loc) {
+make_node(ast_node_t::kind_t kind, Data data, source_location_t loc, SP<source_t> source) {
   auto node = std::make_shared<ast_node_t>();
   node->as.raw = new Data{std::move(data)};
   node->kind = kind;
   node->location = loc;
+  node->source = source;
   return node;
 }
+
+SP<ast_node_t>
+make_node(ast_node_t::kind_t kind, source_location_t loc, SP<source_t>);
