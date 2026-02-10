@@ -65,6 +65,16 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
 
   std::cout << indent();
   switch (node.kind) {
+  case ast_node_t::eRangeExpr: {
+    range_expr_t *expr = node.as.range_expr;
+    std::cout << "[Range ";
+    dump_ast(*expr->min);
+    std::cout << "..";
+    if (expr->is_inclusive) std::cout << "=";
+    dump_ast(*expr->max);
+    std::cout << "]";
+    return;
+  }
   case ast_node_t::eStructExpr: {
     struct_expr_t *expr = node.as.struct_expr;
     std::cout << "[Struct "; dump_ast(*expr->type, indent_val);

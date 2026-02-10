@@ -6,7 +6,7 @@ stringable := contract {
   to_string := fn (!self) -> []u8
 }
 
-convertible<T> := contract {
+convertible<@T> := contract {
   into := fn (!self) -> T
 }
 

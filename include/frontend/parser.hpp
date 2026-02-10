@@ -82,6 +82,7 @@ private:
   struct_expr_t parse_struct_intialization();
 
   void parse_generic_specifier(template_segment_t &segment);
+  bool is_controlflow(SP<ast_node_t>);
 
   binop_type_t binop_type(const token_t &);
 };

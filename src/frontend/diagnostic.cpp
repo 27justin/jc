@@ -55,15 +55,17 @@ std::string serialize(const diagnostic_t &msg) {
   }
   ss << ANSI_RESET << " " << msg.message << "\n\n";
 
-  for (size_t i = msg.origin.start.line; i <= msg.origin.end.line; ++i) {
-    std::string line = std::string(msg.source->line(i));
+  if (msg.origin.start.line > 0) {
+    for (size_t i = msg.origin.start.line; i <= msg.origin.end.line; ++i) {
+      std::string line = std::string(msg.source->line(i));
 
-    size_t col_start = (i == msg.origin.start.line) ? msg.origin.start.column : 0;
-    size_t col_end   = (i == msg.origin.end.line)   ? msg.origin.end.column   : line.size();
+      size_t col_start = (i == msg.origin.start.line) ? msg.origin.start.column : 0;
+      size_t col_end   = (i == msg.origin.end.line)   ? msg.origin.end.column   : line.size();
 
-    ss << line.substr(0, col_start);
-    ss << "\e[0;91m" << line.substr(col_start, col_end - col_start);
-    ss << "\e[0m" << line.substr(col_end) << "\n";
+      ss << line.substr(0, col_start);
+      ss << "\e[0;91m" << line.substr(col_start, col_end - col_start);
+      ss << "\e[0m" << line.substr(col_end) << "\n";
+    }
   }
 
   // Use the start column for indentation logic

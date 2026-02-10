@@ -141,8 +141,22 @@ A::resolve_path(const specialized_path_t &path) {
   for (auto &segment : result.segments) {
     for (auto &ty : segment.types) {
       auto type = resolve_type(*ty);
-      ty = make_shared<type_decl_t>(*ty);
-      ty->name = type->name;
+
+      auto new_ty = make_shared<type_decl_t>();
+      new_ty->name = {type->name};
+
+      new_ty->is_mutable = ty->is_mutable;
+
+      if (type->kind == type_kind_t::ePointer)
+        new_ty->indirections = type->as.pointer->indirections;
+
+      if (type->kind == type_kind_t::eSlice)
+        new_ty->is_slice = true;
+
+      if (type->kind == type_kind_t::eArray)
+        new_ty->len = ty->len;
+
+      ty = new_ty;
     }
   }
 
@@ -239,17 +253,6 @@ A::analyze_binding(N node) {
 
   binding_decl_t *decl = node->as.binding_decl;
 
-  if (!decl->name.is_simple()) {
-    // Template specialization
-    auto candidates = scope().candidates(decl->name);
-    if (candidates.empty()) {
-      diagnostics.messages.emplace_back(error(node->source, node->location, "Invalid template instantiation", "No candidate matches this template."));
-      throw analyze_error_t();
-    }
-
-    return analyze_node(candidates.front()->value);
-  }
-
   current_binding = decl->name;
 
   QT type = analyze_node(decl->value);
@@ -271,7 +274,7 @@ A::analyze_block(N node) {
     last_type = analyze_node(v);
   }
 
-  return last_type ? last_type : resolve_type("void");
+  return block->has_implicit_return ? last_type : resolve_type("void");
 }
 
 bool
@@ -298,7 +301,10 @@ A::analyze_call(N node) {
   call_expr_t *call = node->as.call_expr;
 
   auto fn = analyze_node(call->callee);
-  assert(fn->kind == type_kind_t::eFunction && "Callable is not a function");
+  if (fn->kind != type_kind_t::eFunction) {
+    diagnostics.messages.push_back(error(call->callee->source, call->callee->location, "Not callable", "This expression does not evaluate to a function, and thus is not callable."));
+    throw analyze_error_t{diagnostics};
+  }
 
   // Check the argument types against the parameters
   function_signature_t *signature = fn->as.function;
@@ -361,9 +367,8 @@ A::analyze_literal(N node) {
   case literal_type_t::eString:
     return scope().types.array_of(resolve_type("u8"), literal->value.size());
   case literal_type_t::eInteger:
-    return resolve_type("i32");
   case literal_type_t::eFloat:
-    return resolve_type("f32");
+    return scope().types.untyped_literal(literal->value, literal->type);
   case literal_type_t::eBool:
     return resolve_type("bool");
   default:
@@ -380,8 +385,27 @@ A::analyze_declaration(N node) {
 
   // Determine the type of the value
   QT inferred_type = nullptr;
-  if (decl->value) { // Might just be forward declared, this implies zero initialization
+  if (decl->value) {
+    // Resolve the raw type of the expression
     inferred_type = analyze_node(decl->value);
+
+    // If it's an untyped literal and we have an annotation, try to collapse it early
+    if (inferred_type->kind == type_kind_t::eUntypedLiteral && annotated_type) {
+      if (annotated_type->is_numeric()) {
+        if (can_fit_literal(inferred_type->as.literal->value, annotated_type)) {
+          inferred_type = annotated_type;
+        } else {
+          // Error: Literal is too big for the annotated type
+          diagnostics.messages.push_back(error(node->source, node->location,
+                                               "Literal overflow",
+                                               fmt("Value {} does not fit in type {}.", inferred_type->as.literal->value, to_string(annotated_type))));
+          throw analyze_error_t{diagnostics};
+        }
+      }
+    }
+
+    // If it's still untyped (no annotation), force it to default (f32, i32, or itself)
+    inferred_type = ensure_concrete(inferred_type);
   }
 
   // Reconcile types
@@ -424,26 +448,28 @@ A::resolve_member_access(QT base, const std::string &member_name) {
     }
     break;
   }
+  case type_kind_t::eSlice:
+  case type_kind_t::eArray: {
+    auto element = base->kind == type_kind_t::eSlice ? base->as.slice->element_type : base->as.array->element_type;
+    if (member_name == "size")
+      return resolve_type("u64");
+    if (member_name == "ptr")
+      return scope().types.pointer_to(element, {pointer_kind_t::eNonNullable},
+                                      base->kind == type_kind_t::eSlice);
+    break;
+  }
+  case type_kind_t::ePointer: {
+    return resolve_member_access(base->as.pointer->deref(), member_name);
+  }
   default:
     break;
   }
-
   return nullptr;
 }
 
 QT
 A::analyze_symbol(N node) {
   auto path = node->as.symbol->path;
-
-  if (!path.is_simple()) {
-    path = resolve_path(path);
-    auto candidates = scope().candidates(path);
-    if (candidates.empty()) {
-      diagnostics.messages.push_back(error(node->source, node->location, "Unknown template", "Couldn't infer what template to use here."));
-      throw analyze_error_t{diagnostics};
-    }
-    return monomorphize(candidates.front(), path);
-  }
 
   // Since we don't disambiguate between namespaces, etc., we have to do some special checks on this symbol now.
 
@@ -464,7 +490,8 @@ A::analyze_symbol(N node) {
     ufcs.segments.insert(ufcs.segments.begin(), left->name.segments.begin(), left->name.segments.end());
 
     // Might be a template..
-    if (ufcs.is_simple()) {
+    if (!ufcs.is_simple()) {
+      ufcs = resolve_path(ufcs);
       auto candidates = scope().candidates(ufcs);
       if (candidates.size() > 0) {
         return monomorphize(candidates.front(), ufcs);
@@ -491,12 +518,20 @@ A::analyze_symbol(N node) {
   }
 
   sym = scope().resolve(path);
-  if (!sym) {
-    diagnostics.messages.emplace_back(error(source, node->location, "Unknown symbol", fmt("Symbol `{}` is not known in the current scope.", to_string(path))));
-    throw analyze_error_t {diagnostics};
+  if (sym) {
+    return sym->type;
   }
 
-  return sym->type;
+  if (!path.is_simple()) {
+    path = resolve_path(path);
+    auto candidates = scope().candidates(path);
+    if (!candidates.empty()) {
+      return monomorphize(candidates.front(), path);
+    }
+  }
+
+  diagnostics.messages.emplace_back(error(source, node->location, "Unknown symbol", fmt("Symbol `{}` is not known in the current scope.", to_string(path))));
+  throw analyze_error_t {diagnostics};
 }
 
 bool
@@ -533,23 +568,20 @@ A::is_mutable(N node) {
 QT A::analyze_deref(N node) {
   deref_expr_t *expr = node->as.deref_expr;
 
-  if (is_rvalue(expr->value)) {
+  auto value_type = analyze_node(expr->value);
+
+  if (is_rvalue(expr->value) && value_type->kind != type_kind_t::ePointer) {
     diagnostics.messages.push_back(error(node->source, node->location, "Dereferencing R-value", "This expression is an rvalue (temporary), and has no address, taking a reference of this is not allowed."));
     throw analyze_error_t {diagnostics};
   }
 
-  QT type = analyze_node(expr->value);
-
-  if (type->kind != type_kind_t::ePointer) {
+  if (value_type->kind != type_kind_t::ePointer) {
     diagnostics.messages.push_back(error(node->source, node->location, "Dereferencing concrete type", "This expression resolves to a concrete type, expected a pointer."));
     throw analyze_error_t {diagnostics};
   }
 
-  pointer_t *ptr = type->as.pointer;
-  auto indirections = ptr->indirections;
-  indirections.erase(indirections.begin());
-
-  return scope().types.pointer_to(ptr->base, indirections, ptr->is_mutable);
+  pointer_t *ptr = value_type->as.pointer;
+  return ptr->deref();
 }
 
 QT
@@ -725,6 +757,19 @@ A::is_implicit_convertible(QT from, QT into) {
       return true;
   }
 
+  // Arrays can decay to slices
+  if (from->kind == type_kind_t::eArray && into->kind == type_kind_t::eSlice) {
+    if (*from->as.array->element_type == *into->as.slice->element_type)
+      return true;
+  }
+
+  // Literals may be coerced into the target type
+  if (from->kind == type_kind_t::eUntypedLiteral) {
+    if (into->is_numeric()) {
+      return can_fit_literal(from->as.literal->value, into);
+    }
+  }
+
   return false;
 }
 
@@ -882,6 +927,17 @@ A::analyze_if(N node) {
   if (stmt->reject)
     reject_type = analyze_node(stmt->reject);
 
+  if (pass_type && reject_type) {
+    // If both branches exist, we can treat this as an expression.
+
+    // If the branch types do not match, we resolve to void
+    if (*pass_type != *reject_type)
+      return resolve_type("void");
+
+    // If they do match, we return that type.
+    return pass_type;
+  }
+
   return resolve_type("void");
 }
 
@@ -892,7 +948,8 @@ A::analyze_assignment(N node) {
   auto symbol_type = analyze_node(assign->where);
   auto value_type = analyze_node(assign->value);
 
-  if (*symbol_type != *value_type) {
+  if (*symbol_type != *value_type
+    && !is_implicit_convertible(value_type, symbol_type)) {
     diagnostics.messages.push_back(error(node->source, node->location, "Invalid type", fmt("Assignment to lvalue of type `{}` with value `{}` is invalid.", to_string(symbol_type), to_string(value_type))));
     throw analyze_error_t{diagnostics};
   }
@@ -914,6 +971,171 @@ A::analyze_while(N node) {
 
   analyze_node(stmt->body);
   return resolve_type("void");
+}
+
+QT
+A::analyze_for(N node) {
+  for_stmt_t *stmt = node->as.for_stmt;
+  QT cond = analyze_node(stmt->condition);
+
+  if (stmt->init) {
+    push_type_hint(cond);
+    QT init = analyze_node(stmt->init);
+    pop_type_hint();
+  }
+
+  if (stmt->action)
+    QT action = analyze_node(stmt->action);
+
+  analyze_node(stmt->body);
+  return resolve_type("void");
+}
+
+QT
+A::analyze_range(N node) {
+  range_expr_t *expr = node->as.range_expr;
+
+  QT min = analyze_node(expr->min);
+  QT max = analyze_node(expr->max);
+
+  // min, or max might be untyped. If both are untyped, default to i64
+  if (min->kind == type_kind_t::eUntypedLiteral &&
+      max->kind == type_kind_t::eUntypedLiteral)
+    return resolve_type("i64");
+
+  // Otherwise, resolve to whatever is strongly typed.
+  if (min->kind != type_kind_t::eUntypedLiteral)
+    return min;
+
+  return max;
+}
+
+QT
+A::analyze_sizeof(N node) {
+  auto *expr = node->as.sizeof_expr;
+  specialized_path_t path = expr->value;
+  node->reset();
+
+  if (auto ty = resolve_type(path); ty) {
+    node->kind = ast_node_t::eLiteral;
+    node->as.literal_expr = new literal_expr_t {
+      .value = std::format("{}", ty->size / 8),
+      .type = literal_type_t::eInteger
+    };
+  }
+
+  if (auto sym = scope().resolve(path); sym) {
+    node->kind = ast_node_t::eLiteral;
+    node->as.literal_expr = new literal_expr_t {
+      .value = std::format("{}", sym->type->size / 8),
+      .type = literal_type_t::eInteger
+    };
+  }
+
+  return resolve_type("u64");
+}
+
+QT
+A::analyze_array_access(N node) {
+  array_access_expr_t *expr = node->as.array_access_expr;
+
+  QT array_type = analyze_node(expr->value);
+
+  if (array_type->kind == type_kind_t::ePointer)
+    return array_type->as.pointer->deref();
+
+  if (array_type->kind == type_kind_t::eArray)
+    return array_type->as.array->element_type;
+
+  if (array_type->kind != type_kind_t::eSlice)
+    return array_type->as.slice->element_type;
+
+  diagnostics.messages.push_back(error(expr->value->source, expr->value->location, "Invalid array access", fmt("This expression is of type {}, which cannot be indexed into!", to_string(array_type))));
+  throw analyze_error_t{diagnostics};
+}
+
+QT
+A::ensure_concrete(QT ty) {
+  if (ty->kind == type_kind_t::eUntypedLiteral) {
+    untyped_literal_t *literal = ty->as.literal;
+    if (literal->type == literal_type_t::eInteger)
+      return resolve_type("i32");
+    else if (literal->type == literal_type_t::eFloat)
+      return resolve_type("f32");
+  }
+  return ty;
+}
+
+bool A::is_within_bounds(__int128_t val, QT target_type) {
+  if (target_type->kind == type_kind_t::eInt || target_type->kind == type_kind_t::eUint) {
+    __int128_t min {}, max {};
+
+    if (target_type->size == 8 && target_type->kind == type_kind_t::eUint) {
+      min = std::numeric_limits<uint8_t>::min();
+      max = std::numeric_limits<uint8_t>::max();
+    }
+
+    if (target_type->size == 8 && target_type->kind == type_kind_t::eInt) {
+      min = std::numeric_limits<int8_t>::min();
+      max = std::numeric_limits<int8_t>::max();
+    }
+
+    if (target_type->size == 16 && target_type->kind == type_kind_t::eUint) {
+      min = std::numeric_limits<uint16_t>::min();
+      max = std::numeric_limits<uint16_t>::max();
+    }
+
+    if (target_type->size == 16 && target_type->kind == type_kind_t::eInt) {
+      min = std::numeric_limits<int16_t>::min();
+      max = std::numeric_limits<int16_t>::max();
+    }
+
+    if (target_type->size == 32 && target_type->kind == type_kind_t::eUint) {
+      min = std::numeric_limits<uint32_t>::min();
+      max = std::numeric_limits<uint32_t>::max();
+    }
+
+    if (target_type->size == 32 && target_type->kind == type_kind_t::eInt) {
+      min = std::numeric_limits<int32_t>::min();
+      max = std::numeric_limits<int32_t>::max();
+    }
+
+    if (target_type->size == 64 && target_type->kind == type_kind_t::eUint) {
+      min = std::numeric_limits<uint64_t>::min();
+      max = std::numeric_limits<uint64_t>::max();
+    }
+
+    if (target_type->size == 64 && target_type->kind == type_kind_t::eInt) {
+      min = std::numeric_limits<int64_t>::min();
+      max = std::numeric_limits<int64_t>::max();
+    }
+
+    if (val < min || val > max) {
+      diagnostics.messages.push_back(error(source, {{0,0},{0,0}}, "Literal overflow", fmt("Value {} does not fit into type `{}`", val, to_string(target_type))));
+      throw analyze_error_t{diagnostics};
+    }
+  }
+  return true;
+}
+
+bool
+A::can_fit_literal(const std::string &str, QT target_type) {
+  if (!target_type->is_numeric()) return false;
+  __int128_t value = std::stoll(str);
+  return is_within_bounds(value, target_type);
+}
+
+void A::push_type_hint(QT ty) {
+  type_hint_stack.push_back(ty);
+}
+
+void A::pop_type_hint() {
+  type_hint_stack.pop_back();
+}
+
+SP<type_t> A::type_hint() {
+  if (type_hint_stack.empty()) return nullptr;
+  return type_hint_stack.back();
 }
 
 QT
@@ -1008,6 +1230,22 @@ A::analyze_node(N node) {
 
   case ast_node_t::eWhile:
     type = analyze_while(node);
+    break;
+
+  case ast_node_t::eFor:
+    type = analyze_for(node);
+    break;
+
+  case ast_node_t::eRangeExpr:
+    type = analyze_range(node);
+    break;
+
+  case ast_node_t::eSizeOf:
+    type = analyze_sizeof(node);
+    break;
+
+  case ast_node_t::eArrayAccess:
+    type = analyze_array_access(node);
     break;
 
   default:

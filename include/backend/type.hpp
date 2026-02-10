@@ -10,6 +10,7 @@ using SP = std::shared_ptr<T>;
 
 struct symbol_t;
 struct type_t;
+enum class literal_type_t;
 
 struct struct_layout_t {
   struct field_t {
@@ -74,7 +75,12 @@ struct rvalue_reference_t {
   SP<type_t> base;
 };
 
-enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool, eArray, eSlice, eContract, eSelf, eRValueReference };
+struct untyped_literal_t {
+  std::string value;
+  literal_type_t type;
+};
+
+enum type_kind_t { eStruct, eFunction, eInt, eUint, eFloat, ePointer, eOpaque, eAlias, eVoid, eBool, eArray, eSlice, eContract, eSelf, eRValueReference, eUntypedLiteral };
 struct type_t {
   type_kind_t kind;
   specialized_path_t name;
@@ -91,6 +97,7 @@ struct type_t {
       slice_t *slice;
       contract_t *contract;
       rvalue_reference_t *rvalue;
+      untyped_literal_t *literal;
       void *any;
     };
   } as;

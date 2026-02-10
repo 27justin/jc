@@ -38,11 +38,15 @@ private:
   scope_t &scope();
   void pop_scope();
 
+  void push_type_hint(SP<type_t>);
+  void pop_type_hint();
+  SP<type_t> type_hint();
+
   std::shared_ptr<source_t> source;
 
   std::vector<SP<scope_t>> scope_stack;
   std::vector<SP<type_t>> function_stack;
-  std::vector<SP<type_t>> type_infer_stack; //< Used to infer types in certain cases.
+  std::vector<SP<type_t>> type_hint_stack; //< Used to infer types in certain cases.
 
   diagnostic_stack_t diagnostics;
 
@@ -83,6 +87,10 @@ private:
   QT analyze_if(N);
   QT analyze_assignment(N);
   QT analyze_while(N);
+  QT analyze_for(N);
+  QT analyze_range(N);
+  QT analyze_sizeof(N);
+  QT analyze_array_access(N);
 
   bool is_static_dispatch(N);
   bool is_dynamic_dispatch(N);
@@ -106,6 +114,10 @@ private:
   QT resolve_type(const type_decl_t &);
   QT resolve_type(const specialized_path_t &);
   QT resolve_type(const std::string &);
+
+  bool can_fit_literal(const std::string &, QT target_type);
+  QT ensure_concrete(QT);
+  bool is_within_bounds(__int128_t, QT);
 
   specialized_path_t resolve_path(const specialized_path_t&);
 };

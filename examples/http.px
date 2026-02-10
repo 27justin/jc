@@ -71,20 +71,20 @@ linux.sockaddr := struct {
 }
 
 main := fn (argc: i32) {
-  let socket := linux.socket(sys.AF_INET, sys.SOCK_STREAM, 0)
+  let socket := linux.socket(sys.AF_INET, sys.SOCK_STREAM, 0);
 
-  var address: linux.sockaddr
-  linux.inet_pton(sys.AF_INET, "127.0.0.1", &address)
-  linux.bind(socket, &address, 4)
+  var address: linux.sockaddr;
+  linux.inet_pton(sys.AF_INET, "127.0.0.1", &address);
+  linux.bind(socket, &address, 4);
 
-  var data: [4096]u8
+  var data: [4096]u8;
   while true {
-    var clientaddr_len: u64
-    var clientaddr: linux.sockaddr
-    let client := linux.accept(socket, &clientaddr, &clientaddr_len)
+    var clientaddr_len: u64;
+    var clientaddr: linux.sockaddr;
+    let client := linux.accept(socket, &clientaddr, &clientaddr_len);
 
-    let bytes := libc.read(socket, data, 4096 as u64)
-    libc.printf("Read %lli bytes\n", bytes)
+    let bytes := libc.read(socket, data, 4096);
+    libc.printf("Read %lli bytes\n", bytes);
   }
 }
 

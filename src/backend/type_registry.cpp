@@ -244,6 +244,18 @@ type_registry_t::rvalue_of(SP<type_t> base) {
   return type;
 }
 
+SP<type_t> type_registry_t::untyped_literal(const std::string &value,
+                                            literal_type_t ty) {
+  auto type = std::make_shared<type_t>();
+  type->size = 0;
+  type->kind = type_kind_t::eUntypedLiteral;
+  type->as.literal = new untyped_literal_t {
+    .value = value,
+    .type = ty
+  };
+  return type;
+}
+
 void
 type_registry_t::merge(const type_registry_t &other) {
   registry.insert(other.registry.begin(), other.registry.end());

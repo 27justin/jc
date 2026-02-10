@@ -34,6 +34,7 @@ enum class token_type_t {
   keywordContract,
   keywordAs,
   keywordImport,
+  keywordSizeOf,
 
   literalString,
   literalInt,

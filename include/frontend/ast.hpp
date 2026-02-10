@@ -64,6 +64,7 @@ struct defer_expr_t;
 struct move_expr_t;
 struct assign_expr_t;
 struct array_access_expr_t;
+struct sizeof_expr_t;
 
 struct member_access_expr_t;
 
@@ -73,7 +74,7 @@ struct ast_node_t {
   ~ast_node_t();
   void reset();
 
-  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor, eWhile, eBinding, eStructExpr, eRangeExpr, eContract, eDefer, eMove, eTemplate, eArrayAccess } kind;
+  enum kind_t { eInvalid, eType, eDeclaration, eBinop, eUnary, eSymbol, eStructDecl, eBlock, eFunctionDecl, eFunctionImpl, eExtern, eReturn, eCall, eLiteral, eSelf, eMemberAccess, eAddrOf, eFunctionParameter, eIf, eTypeAlias, eCast, eAssignment, eDeref, eNil, eAttribute, eFor, eWhile, eBinding, eStructExpr, eRangeExpr, eContract, eDefer, eMove, eTemplate, eArrayAccess, eSizeOf } kind;
   struct {
     union {
       type_decl_t *type;
@@ -107,6 +108,8 @@ struct ast_node_t {
       contract_decl_t *contract_decl;
       defer_expr_t *defer_expr;
       move_expr_t *move_expr;
+      array_access_expr_t *array_access_expr;
+      sizeof_expr_t *sizeof_expr;
       void *raw;
     };
   } as;
@@ -166,6 +169,7 @@ struct struct_decl_t {
 
 struct block_node_t {
   std::vector<SP<ast_node_t>> body;
+  bool has_implicit_return;
 };
 
 struct function_decl_t {
@@ -304,6 +308,10 @@ struct move_expr_t {
 struct array_access_expr_t {
   SP<ast_node_t> value;
   SP<ast_node_t> offset;
+};
+
+struct sizeof_expr_t {
+  specialized_path_t value;
 };
 
 std::string to_string(const type_decl_t &);

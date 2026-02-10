@@ -1,5 +1,6 @@
 #pragma once
 
+#include "frontend/ast.hpp"
 #include "type.hpp"
 #include "frontend/path.hpp"
 
@@ -25,6 +26,8 @@ struct type_registry_t {
   SP<type_t> add_template_alias(const specialized_path_t &name, SP<type_t>);
 
   SP<type_t> rvalue_of(SP<type_t> base);
+
+  SP<type_t> untyped_literal(const std::string &, literal_type_t);
 
   void merge(const type_registry_t &other);
 private:

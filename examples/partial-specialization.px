@@ -1,0 +1,21 @@
+import std.string
+import std.vector
+
+std.vector<[]u8>.join := fn (!self, separator: []u8) -> std.string {
+  var str: std.string = std.string.init("");
+  for i in 0..self.size() {
+    str.append<[]u8>(self.at(i as i64).*);
+    if i < self.size() - 1 {
+      str.append<[]u8>(separator);
+    }
+  }
+  str
+}
+
+main := fn () -> i32 {
+  let v2: std.vector<[]u8> = std.vector<[]u8>.init();
+  v2.join("\n");
+
+  0
+}
+

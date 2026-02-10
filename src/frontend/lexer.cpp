@@ -91,6 +91,7 @@ token_type_t keyword(std::string_view kw) {
   if (kw == "defer") return tt::keywordDefer;
   if (kw == "move") return tt::keywordMove;
   if (kw == "import") return tt::keywordImport;
+  if (kw == "sizeof") return tt::keywordSizeOf;
 
   return tt::identifier;
 }
@@ -313,7 +314,7 @@ token_t lexer_t::peek(int delta) {
   do {
     tok = next();
     delta--;
-  } while (delta > 0);
+  } while (delta >= 0);
   source->pop();
   return tok;
 }

@@ -15,32 +15,48 @@ using TU = translation_unit_t;
 using std::make_unique;
 using std::make_shared;
 
-// Returns {Left Binding Power, Right Binding Power}
 std::pair<int, int> get_binding_power(TT type) {
   switch (type) {
-  case TT::operatorEqual:       return {2, 1};   // Right associative
-  case TT::operatorPlus:
-  case TT::operatorMinus:       return {10, 11}; // Left associative
-  case TT::operatorMultiply:
-  case TT::operatorDivide:      return {20, 21};
-  case TT::delimiterLParen:     return {30, 0};  // Function Call
-  case TT::delimiterLBracket:   return {31, 0};  // Array access
-  case TT::operatorExclamation: return {38, 39}; // ! has lower precedence than ., allows us to chain like .member! to cast into non-nullable pointer more easily.
-  case TT::operatorDot:         return {40, 41}; // Member Access
-  case TT::operatorNotEqual:    return {40, 41};
+  // Assignment
+  case TT::operatorEqual:       return {2, 1};
+
+  // Logical Operators
+  case TT::operatorBooleanOr:   return {5, 6};
+  case TT::operatorBooleanAnd:  return {7, 8};
+
+  // Comparisons
   case TT::operatorEquality:
+  case TT::operatorNotEqual:
   case TT::operatorGTE:
   case TT::operatorLTE:
-  case TT::delimiterLAngle:
-  case TT::delimiterRAngle:     return {40, 41};
-  case TT::operatorMod:         return {50, 51};
-  case TT::operatorRange:       return {40, 41};
-  case TT::operatorBooleanOr:   return {40, 41};
-  case TT::operatorBooleanAnd:  return {40, 41};
-  case TT::operatorXor:         return {20, 21};
-  case TT::keywordAs:           return {80, 81};
-  case TT::operatorDeref:       return {99, 100};
-  case TT::delimiterLBrace:     return {100, 0}; // Struct initialization
+  case TT::delimiterLAngle: // <
+  case TT::delimiterRAngle: // >
+    return {10, 11};
+
+  // Range
+  case TT::operatorRange:       return {15, 16};
+
+  // Addition / Subtraction
+  case TT::operatorPlus:
+  case TT::operatorMinus:       return {20, 21};
+
+  // Multiplication / Division / Bitwise operators
+  case TT::operatorMultiply:
+  case TT::operatorDivide:
+  case TT::operatorMod:
+  case TT::operatorXor:         return {30, 31};
+
+  // Casting
+  case TT::keywordAs:           return {40, 41};
+
+  // Postfix / Primary
+  case TT::operatorExclamation: return {60, 61};
+  case TT::operatorDot:         return {70, 71};
+  case TT::delimiterLBracket:   return {80, 81}; // Array access
+  case TT::delimiterLParen:     return {80, 81}; // Function Call
+  case TT::operatorDeref:       return {90, 91};
+  case TT::delimiterLBrace:     return {95, 0};  // Struct literal
+
   default:                      return {-1, -1};
   }
 }
@@ -192,11 +208,13 @@ P::parse_specialized_path() {
     specialized_segment_t segment {};
 
     segment.name = source->string(token.location);
+    auto current_token = token;
     try {
       lexer.push();
       if (maybe(TT::delimiterLAngle)) {
-        segment.types.push_back(std::make_shared<type_decl_t>(parse_type()));
+        auto type = std::make_shared<type_decl_t>(parse_type());
         expect(TT::delimiterRAngle);
+        segment.types.push_back(type);
       }
 
       path.segments.push_back(segment);
@@ -209,6 +227,7 @@ P::parse_specialized_path() {
       diagnostics.messages.pop_back();
       path.segments.push_back(segment);
       lexer.pop();
+      this->token = current_token;
       return path;
     }
   }
@@ -327,7 +346,7 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
     case TT::operatorRange: {
       token = lexer.next();
       bool is_inclusive = maybe(TT::operatorEqual);
-      left = make_node<range_expr_t>(ast_node_t::eRangeExpr, {.min = left, .max = parse_expression(right_binding, allow_struct_literal), .is_inclusive = is_inclusive}, {start, token.location.end}, source);
+      left = make_node<range_expr_t>(ast_node_t::eRangeExpr, {.min = left, .max = parse_expression(0, allow_struct_literal), .is_inclusive = is_inclusive}, {start, token.location.end}, source);
       continue;
     }
 
@@ -383,6 +402,12 @@ P::parse_primary(bool allow_struct_literal) {
   case TT::keywordSelf:
   case TT::identifier:
     primary = make_node<symbol_expr_t>(ast_node_t::eSymbol, {.path = parse_specialized_path()}, token.location, source);
+    return primary;
+  case TT::keywordSizeOf:
+    expect(TT::keywordSizeOf);
+    expect(TT::delimiterLParen);
+    primary = make_node<sizeof_expr_t>(ast_node_t::eSizeOf, {parse_specialized_path()}, token.location, source);
+    expect(TT::delimiterRParen);
     return primary;
   case TT::literalInt:
     expect(TT::literalInt);
@@ -548,11 +573,25 @@ P::parse_statement() {
     //
     // In any case, all these are handled by parse_expression
     auto expr = parse_expression();
-    maybe(TT::delimiterSemicolon);
     return expr;
   }
   }
   return nullptr;
+}
+
+bool
+P::is_controlflow(SP<ast_node_t> node) {
+  switch (node->kind) {
+  case ast_node_t::eFor:
+    return true;
+  case ast_node_t::eWhile:
+    return true;
+  case ast_node_t::eIf:
+    return true;
+  default:
+    break;
+  }
+  return false;
 }
 
 SP<ast_node_t>
@@ -560,9 +599,27 @@ P::parse_block() {
   expect(TT::delimiterLBrace);
 
   auto location = token.location;
+
   block_node_t block;
+  block.has_implicit_return = false;
   while (!peek(TT::delimiterRBrace)) {
-    block.body.push_back(parse_statement());
+    auto statement = parse_statement();
+    block.body.push_back(statement);
+
+    if (is_controlflow(statement) == false) {
+      if (!maybe(TT::delimiterSemicolon)) {
+        if (!block.has_implicit_return)
+          block.has_implicit_return = true;
+        else {
+          diagnostics.messages.push_back(error(source, token.location, "Multiple return", "Only one return expression is allowed, this block has multiple."));
+          throw parse_error_t{diagnostics};
+        }
+      }
+    }
+  }
+
+  if (block.body.size() > 0 && is_controlflow(block.body.back()) && !block.has_implicit_return) {
+    block.has_implicit_return = true;
   }
 
   expect(TT::delimiterRBrace);
