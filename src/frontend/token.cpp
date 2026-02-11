@@ -59,6 +59,8 @@ const char *to_text(token_type_t ty) {
     return "import";
   case tt::keywordSizeOf:
     return "sizeof";
+  case tt::keywordSlice:
+    return "slice";
 
   case tt::literalString:
     return "string literal";
@@ -224,6 +226,7 @@ bool is_keyword(token_type_t ty) {
   case T::keywordAs:
   case T::keywordImport:
   case T::keywordSizeOf:
+  case T::keywordSlice:
     return true;
   default:
     return false;

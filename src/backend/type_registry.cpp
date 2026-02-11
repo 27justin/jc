@@ -74,7 +74,7 @@ SP<type_t> type_registry_t::add_function(
   // Signature to later validate calls.
   auto signature = new function_signature_t;
   signature->arg_types = arguments;
-  signature->return_type = return_type;
+  signature->return_type = return_type ? return_type : resolve("void");
   signature->receiver = receiver;
   signature->is_var_args = is_var_args;
 

@@ -104,6 +104,21 @@ A::pop_scope() {
   scope_stack.pop_back();
 }
 
+SP<type_t>
+A::current_function() {
+  return function_stack.back();
+}
+
+void
+A::push_function(SP<type_t> fn) {
+  function_stack.push_back(fn);
+}
+
+void
+A::pop_function() {
+  function_stack.pop_back();
+}
+
 QT
 A::resolve_type(const type_decl_t &ty) {
   QT base = scope().types.resolve(ty.name);
@@ -199,6 +214,11 @@ A::analyze_function_decl(const function_decl_t &decl, SP<type_t> implicit_receiv
         params.back() = scope().types.rvalue_of(params.back());
       }
     }
+
+    if (params.size() > 0 && !params.back()) {
+      diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Unknown type", fmt("Unknown type {}", to_string(param.type))));
+      throw analyze_error_t{diagnostics};
+    }
   }
 
   return scope().types.add_function(resolve_type(decl.return_type), params, active_receiver, decl.is_var_args);
@@ -230,7 +250,11 @@ A::analyze_function_impl(N node, SP<type_t> implicit_receiver) {
     }
   }
 
+  auto function = analyze_function_decl(impl->declaration, implicit_receiver);
+  push_function(function);
   QT actual_return_type = analyze_node(impl->block);
+  pop_function();
+
   pop_scope();
 
   QT expected_return_type = resolve_type(impl->declaration.return_type);
@@ -280,7 +304,8 @@ A::analyze_block(N node) {
 bool
 A::is_static_dispatch(N node) {
   call_expr_t *call = node->as.call_expr;
-  assert(call->callee->kind == ast_node_t::eSymbol);
+  if (call->callee->kind != ast_node_t::eSymbol)
+    return false;
 
   return scope().resolve(call->callee->as.symbol->path) != nullptr;
 }
@@ -382,6 +407,12 @@ A::analyze_declaration(N node) {
 
   // Resolve annotation once if it exists
   QT annotated_type = decl->type ? resolve_type(*decl->type) : nullptr;
+  bool has_type_hint = false;
+
+  if (annotated_type) {
+    push_type_hint(annotated_type);
+    has_type_hint = true;
+  }
 
   // Determine the type of the value
   QT inferred_type = nullptr;
@@ -411,7 +442,8 @@ A::analyze_declaration(N node) {
   // Reconcile types
   QT final_type = nullptr;
   if (annotated_type && inferred_type) {
-    if (*annotated_type != *inferred_type) {
+    if (*annotated_type != *inferred_type
+      && !is_implicit_convertible(inferred_type, annotated_type)) {
       diagnostics.messages.push_back(error(node->source, node->location,
                                            "Type mismatch",
                                            fmt("Type annotation holds a different type than the expression. ({} vs {})", to_string(annotated_type), to_string(inferred_type))));
@@ -426,6 +458,10 @@ A::analyze_declaration(N node) {
   if (!final_type) {
     diagnostics.messages.push_back(error(node->source, node->location, "Type error", "Cannot infer type."));
     throw analyze_error_t {diagnostics};
+  }
+
+  if (has_type_hint) {
+    pop_type_hint();
   }
 
   scope().add(decl->identifier, final_type, decl->is_mutable);
@@ -485,6 +521,20 @@ A::analyze_symbol(N node) {
   SP<type_t> left = sym ? sym->type : nullptr;
   pcopy.segments.erase(pcopy.segments.begin());
 
+  while (pcopy.segments.size() > 0 && left) {
+    auto member = resolve_member_access(left, pcopy.segments.front().name);
+    if (member == nullptr) {
+      break;
+    }
+    left = member;
+    pcopy.segments.erase(pcopy.segments.begin());
+  }
+
+  if (left && pcopy.segments.empty()) {
+    // Member access
+    return left;
+  }
+
   if (left) { // UFCS
     specialized_path_t ufcs = pcopy;
     ufcs.segments.insert(ufcs.segments.begin(), left->name.segments.begin(), left->name.segments.end());
@@ -500,21 +550,6 @@ A::analyze_symbol(N node) {
 
     sym = scope().resolve(ufcs);
     if (sym) return sym->type;
-  }
-
-  while (pcopy.segments.size() > 0 && left) {
-    auto member = resolve_member_access(left, pcopy.segments.front().name);
-    if (member == nullptr) {
-      left = nullptr;
-      break;
-    }
-    left = member;
-    pcopy.segments.erase(pcopy.segments.begin());
-  }
-
-  if (left) {
-    // Member access
-    return left;
   }
 
   sym = scope().resolve(path);
@@ -542,7 +577,8 @@ A::is_rvalue(N node) {
 bool
 A::is_lvalue(N node) {
   return node->kind == ast_node_t::eSymbol ||
-         node->kind == ast_node_t::eMemberAccess;
+         node->kind == ast_node_t::eMemberAccess ||
+         node->kind == ast_node_t::eArrayAccess;
 }
 
 bool
@@ -610,7 +646,12 @@ QT
 A::analyze_struct_expr(N node) {
   struct_expr_t *expr = node->as.struct_expr;
 
-  QT struct_type = analyze_node(expr->type);
+  QT struct_type {nullptr};
+  if (expr->type)
+     struct_type = analyze_node(expr->type);
+  else
+    struct_type = type_hint();
+
   // TODO: Check members...
   return struct_type;
 }
@@ -663,7 +704,7 @@ A::satisfies_contract(QT type, QT contract_type) {
         auto symbol_fn_param = symbol_fn->arg_types[i];
 
         // Type mismatches in the argument list breaks contract.
-        if (contract_fn_param != symbol_fn_param) {
+        if (*contract_fn_param != *symbol_fn_param) {
           diagnostics.messages.push_back(error(source, {{0,0}, {0,0}}, "Contract violation", fmt("Function `{}` does not match the contract function `{}` (got {}, expected {})", sym->name, req_name, to_string(sym->type), to_string(req_type))));
           return false;
         }
@@ -781,6 +822,18 @@ A::is_cast_convertible(QT from, QT into) {
     return satisfies_contract(from, into);
   }
 
+  if (from->kind == type_kind_t::ePointer &&
+      into->kind == type_kind_t::ePointer) {
+    auto f = from->as.pointer;
+    auto i = into->as.pointer;
+    auto any = resolve_type("any");
+
+    bool types_match = (f->base == i->base);
+    bool involves_any = (*f->base == *any || *i->base == *any);
+
+    return types_match || involves_any;
+  }
+
   if ((into->kind == type_kind_t::eInt || into->kind == type_kind_t::eUint) &&
       (from->kind == type_kind_t::eInt || from->kind == type_kind_t::eUint))
     return true;
@@ -822,6 +875,12 @@ QT A::resolve_binop_result_type(binop_type_t ty, QT left, QT right) {
   switch (ty) {
   case binop_type_t::eAnd:
   case binop_type_t::eOr:
+  case binop_type_t::eEqual:
+  case binop_type_t::eNotEqual:
+  case binop_type_t::eGT:
+  case binop_type_t::eGTE:
+  case binop_type_t::eLT:
+  case binop_type_t::eLTE:
     return resolve_type("bool");
   default:
     return left;
@@ -870,21 +929,25 @@ A::analyze_defer(N node) {
 
 QT A::analyze_move(N node) {
   move_expr_t *move = node->as.move_expr;
-  if (!is_lvalue(move->symbol) || move->symbol->kind != ast_node_t::eSymbol) {
+  if (!is_lvalue(move->symbol)) {
     diagnostics.messages.push_back(error(node->source, node->location, "Moving temporary", "`move` can only be performed on lvalues, this expression is temporary."));
     throw analyze_error_t{diagnostics};
   }
 
-  symbol_expr_t *sym = move->symbol->as.symbol;
+  if (move->symbol->kind == ast_node_t::eSymbol) {
+    symbol_expr_t *sym = move->symbol->as.symbol;
 
-  auto symbol = scope().resolve(sym->path);
-  if (!symbol) {
-    diagnostics.messages.emplace_back(error(source, node->location, "Unknown symbol", "Symbol is not known in the current scope."));
-    throw analyze_error_t{diagnostics};
+    auto symbol = scope().resolve(sym->path);
+    if (!symbol) {
+      diagnostics.messages.emplace_back(error(source, node->location, "Unknown symbol", "Symbol is not known in the current scope."));
+      throw analyze_error_t{diagnostics};
+    }
+
+    scope().remove(sym->path);
+    return scope().types.rvalue_of(symbol->type);
+  } else {
+    return scope().types.rvalue_of(analyze_node(move->symbol));
   }
-
-  scope().remove(sym->path);
-  return scope().types.rvalue_of(symbol->type);
 }
 
 QT
@@ -1047,10 +1110,10 @@ A::analyze_array_access(N node) {
   if (array_type->kind == type_kind_t::eArray)
     return array_type->as.array->element_type;
 
-  if (array_type->kind != type_kind_t::eSlice)
+  if (array_type->kind == type_kind_t::eSlice)
     return array_type->as.slice->element_type;
 
-  diagnostics.messages.push_back(error(expr->value->source, expr->value->location, "Invalid array access", fmt("This expression is of type {}, which cannot be indexed into!", to_string(array_type))));
+  diagnostics.messages.push_back(error(expr->value->source, expr->value->location, "Invalid array access", fmt("This expression is of type {}, which cannot be indexed into.", to_string(array_type))));
   throw analyze_error_t{diagnostics};
 }
 
@@ -1136,6 +1199,85 @@ void A::pop_type_hint() {
 SP<type_t> A::type_hint() {
   if (type_hint_stack.empty()) return nullptr;
   return type_hint_stack.back();
+}
+
+QT
+A::analyze_slice(N node) {
+  slice_expr_t *slice = node->as.slice_expr;
+
+  QT pointer_type = analyze_node(slice->pointer);
+  QT size_type = analyze_node(slice->size);
+  QT slice_base_type = resolve_type(slice->type);
+
+  if (pointer_type->kind != type_kind_t::ePointer) {
+    diagnostics.messages.push_back(error(node->source, node->location, fmt("Invalid slice operation", "slice(type, pointer, size) takes a `{}` as a second argument, got `{}`", to_string(scope().types.pointer_to(slice_base_type, {pointer_kind_t::eNonNullable}, false)), to_string(pointer_type))));
+    throw analyze_error_t{diagnostics};
+  }
+
+  if (*pointer_type->as.pointer->deref() != *slice_base_type) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Invalid slice operation", fmt("slice(type, pointer, size) takes a `{}` as a second argument, got `{}`", to_string(scope().types.pointer_to(slice_base_type, {pointer_kind_t::eNonNullable}, false)), to_string(pointer_type))));
+    throw analyze_error_t{diagnostics};
+  }
+
+  return scope().types.slice_of(pointer_type->as.pointer->base, false);
+}
+
+QT A::analyze_return(N node) {
+  return_stmt_t *stmt = node->as.return_stmt;
+
+  auto fn = current_function();
+
+  QT ty = analyze_node(stmt->value);
+  if (!is_implicit_convertible(ty, fn->as.function->return_type)) {
+    diagnostics.messages.push_back(error(node->source, node->location, "Unexpected return type", fmt("This function returns `{}`, but type `{}` is not implicitely convertible to it.", to_string(fn->as.function->return_type), to_string(ty))));
+    throw analyze_error_t{diagnostics};
+  }
+
+  return resolve_type("void");
+}
+
+QT
+A::analyze_member_access(N node) {
+  member_access_expr_t *expr = node->as.member_access;
+
+  auto left = analyze_node(expr->object);
+  return resolve_member_access(left, expr->member);
+}
+
+QT
+A::analyze_array_initialize(N node) {
+  array_initialize_expr_t *expr = node->as.array_initialize_expr;
+
+  auto hinted_type = type_hint();
+  SP<type_t> base_type = nullptr;
+
+  if (hinted_type) {
+    if (hinted_type->kind == type_kind_t::eArray)
+      base_type = hinted_type->as.array->element_type;
+    else if (hinted_type->kind == type_kind_t::eSlice)
+      base_type = hinted_type->as.slice->element_type;
+  }
+
+  for (auto &node : expr->values) {
+    auto element_type = analyze_node(node);
+
+    if (!base_type) {
+      base_type = element_type;
+    }
+
+    if (!is_implicit_convertible(element_type, base_type)) {
+      diagnostics.messages.push_back(error(node->source, node->location, "Invalid type", fmt("Expected expression to be of type `{}`, but instead is `{}`", to_string(hinted_type), to_string(element_type))));
+      throw analyze_error_t {diagnostics};
+    }
+  }
+
+  return scope().types.array_of(base_type, expr->values.size());
+}
+
+QT
+A::analyze_attribute(N node) {
+  attribute_decl_t *attr = node->as.attribute_decl;
+  return analyze_node(attr->affect);
 }
 
 QT
@@ -1246,6 +1388,26 @@ A::analyze_node(N node) {
 
   case ast_node_t::eArrayAccess:
     type = analyze_array_access(node);
+    break;
+
+  case ast_node_t::eSliceExpr:
+    type = analyze_slice(node);
+    break;
+
+  case ast_node_t::eReturn:
+    type = analyze_return(node);
+    break;
+
+  case ast_node_t::eMemberAccess:
+    type = analyze_member_access(node);
+    break;
+
+  case ast_node_t::eArrayInitializeExpr:
+    type = analyze_array_initialize(node);
+    break;
+
+  case ast_node_t::eAttribute:
+    type = analyze_attribute(node);
     break;
 
   default:

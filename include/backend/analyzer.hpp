@@ -42,6 +42,10 @@ private:
   void pop_type_hint();
   SP<type_t> type_hint();
 
+  void push_function(SP<type_t>);
+  void pop_function();
+  SP<type_t> current_function();
+
   std::shared_ptr<source_t> source;
 
   std::vector<SP<scope_t>> scope_stack;
@@ -91,6 +95,11 @@ private:
   QT analyze_range(N);
   QT analyze_sizeof(N);
   QT analyze_array_access(N);
+  QT analyze_slice(N);
+  QT analyze_return(N);
+  QT analyze_member_access(N);
+  QT analyze_array_initialize(N);
+  QT analyze_attribute(N);
 
   bool is_static_dispatch(N);
   bool is_dynamic_dispatch(N);

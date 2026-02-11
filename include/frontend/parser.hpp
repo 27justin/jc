@@ -65,6 +65,8 @@ private:
   SP<ast_node_t> parse_return();
   SP<ast_node_t> parse_primary(bool allow_struct_literal = true);
   SP<ast_node_t> parse_expression(int min_binding_power = 0, bool allow_struct_literal = true);
+  SP<ast_node_t> parse_slice();
+  SP<ast_node_t> parse_array_initializer();
   attribute_decl_t parse_attributes();
 
   SP<ast_node_t> parse_if();

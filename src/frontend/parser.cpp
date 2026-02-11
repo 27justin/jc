@@ -359,6 +359,7 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
         auto member = source->string(token.location);
         expect(TT::operatorColon);
         init.values[member] = parse_expression(0, true); // Nested exprs can have structs
+        maybe(TT::operatorComma);
       }
       left = make_node<struct_expr_t>(ast_node_t::eStructExpr, init, {start, token.location.end}, source);
       break;
@@ -375,6 +376,17 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
       break;
     }
 
+    case TT::operatorDot: {
+      expect(TT::operatorDot);
+      expect(TT::identifier);
+      left = make_node<member_access_expr_t>(ast_node_t::eMemberAccess,
+                                             {
+                                                 .object = left,
+                                                 .member = source->string(token.location)
+                                             }, token.location, source);
+      break;
+    }
+
     default: {
       token = lexer.next();
       // Standard Binary Operator
@@ -388,6 +400,46 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
     }
   }
   return left;
+}
+
+SP<ast_node_t>
+P::parse_slice() {
+  // slice(u8, ptr, size)
+  expect(TT::keywordSlice);
+  auto location = token.location;
+
+  expect(TT::delimiterLParen);
+
+  auto ty = parse_type();
+  expect(TT::operatorComma);
+
+  auto ptr = parse_expression();
+  expect(TT::operatorComma);
+
+  auto size = parse_expression();
+  expect(TT::delimiterRParen);
+
+  location.end = token.location.end;
+  return make_node<slice_expr_t>(ast_node_t::eSliceExpr, {
+      .type = ty,
+      .pointer = ptr,
+      .size = size
+    }, location, source);
+}
+
+SP<ast_node_t>
+P::parse_array_initializer() {
+  expect(TT::delimiterLBracket);
+
+  auto location = token.location;
+
+  std::vector<SP<ast_node_t>> values;
+  while (!maybe(TT::delimiterRBracket)) {
+    values.push_back(parse_expression());
+    maybe(TT::operatorComma);
+  }
+
+  return make_node<array_initialize_expr_t>(ast_node_t::eArrayInitializeExpr, {.values = values}, location, source);
 }
 
 SP<ast_node_t>
@@ -446,6 +498,12 @@ P::parse_primary(bool allow_struct_literal) {
     primary = make_shared<ast_node_t>();
     primary->kind = ast_node_t::eNil;
     return primary;
+  }
+  case TT::keywordSlice: {
+    return parse_slice();
+  }
+  case TT::delimiterLBracket: {
+    return parse_array_initializer();
   }
   case TT::delimiterLParen:
     expect(TT::delimiterLParen);
@@ -723,6 +781,8 @@ P::parse_struct() {
 
     expect(TT::operatorColon);
     type_decl_t type = parse_type();
+
+    maybe(TT::operatorComma);
 
     decl.members.push_back({
         .name = member_name,

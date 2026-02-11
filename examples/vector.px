@@ -1,0 +1,10 @@
+import std.vector
+
+main := fn () -> i32 {
+  let vec: std.vector<i32> = std.vector<i32>.init();
+  let i: i32 = 99;
+  vec.push(move i);
+  0
+}
+
+

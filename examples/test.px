@@ -1,0 +1,28 @@
+A<@T> := struct {
+  a: i64
+}
+
+A<@T>.empty := fn (!self) -> bool {
+  true
+}
+
+
+B := struct {
+  a: A<i32>
+}
+
+B.empty := fn (!self) -> bool {
+  self.a.empty()
+}
+
+
+main := fn () {
+  let s: B = B {
+    a: A {
+      a: 9
+    }
+  };
+
+  s.empty();
+}
+

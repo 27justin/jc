@@ -77,7 +77,7 @@ void dump_ast(ast_node_t &node, size_t indent_val) {
   }
   case ast_node_t::eStructExpr: {
     struct_expr_t *expr = node.as.struct_expr;
-    std::cout << "[Struct "; dump_ast(*expr->type, indent_val);
+    std::cout << "[Struct "; if(expr->type) dump_ast(*expr->type, indent_val);
     std::cout << "\n";
     for (auto &[memb, val] : expr->values) {
       std::cout << indent() << "  " << memb << ": ";

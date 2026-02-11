@@ -92,6 +92,7 @@ token_type_t keyword(std::string_view kw) {
   if (kw == "move") return tt::keywordMove;
   if (kw == "import") return tt::keywordImport;
   if (kw == "sizeof") return tt::keywordSizeOf;
+  if (kw == "slice") return tt::keywordSlice;
 
   return tt::identifier;
 }
