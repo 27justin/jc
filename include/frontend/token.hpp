@@ -48,7 +48,21 @@ enum class token_type_t {
   operatorMinus,
   operatorDivide,
   operatorMultiply,
+
   operatorEqual,
+
+  operatorPlusEqual,          // +=
+  operatorMinusEqual,         // -=
+  operatorMultiplyEqual,      // *=
+  operatorDivideEqual,        // /=
+  operatorModEqual,           // %=
+
+  operatorBitShiftLeftEqual,  // <<=
+  operatorBitShiftRightEqual, // >>=
+  operatorBitXorEqual,        // ^=
+  operatorBitOrEqual,         // |=
+  operatorBitAndEqual,        // &=
+
   operatorEquality,
   operatorMod,
   operatorRange, // <operatorDot,operatorDot>

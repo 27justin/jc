@@ -108,6 +108,11 @@ get_binding_power(TT type) {
   switch (type) {
     // Assignment
     case TT::operatorEqual:
+    case TT::operatorPlusEqual:
+    case TT::operatorMinusEqual:
+    case TT::operatorMultiplyEqual:
+    case TT::operatorDivideEqual:
+    case TT::operatorModEqual:
       return { 2, 1 };
 
     // Logical Operators
@@ -553,6 +558,46 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
         continue;
       }
 
+      case TT::operatorPlusEqual:
+      case TT::operatorMinusEqual:
+      case TT::operatorMultiplyEqual:
+      case TT::operatorDivideEqual:
+      case TT::operatorModEqual: {
+        token             = lexer.next();
+        auto tok_location = token.location;
+
+        char op = ' ';
+        switch (next.type) {
+          case TT::operatorPlusEqual:
+            op = '+';
+            break;
+          case TT::operatorMinusEqual:
+            op = '-';
+            break;
+          case TT::operatorMultiplyEqual:
+            op = '*';
+            break;
+          case TT::operatorDivideEqual:
+            op = '/';
+            break;
+          case TT::operatorModEqual:
+            op = '%';
+            break;
+        }
+
+        source_location_t value_span = { { lexer.peek().location.start }, {} };
+        auto              rhs        = parse_expression(min_binding_power, allow_struct_literal);
+        value_span.end               = token.location.end;
+
+        auto expansion = std::format("{} = {} {} ({})",
+                                     source->string(left->location),
+                                     source->string(left->location),
+                                     op,
+                                     source->string(value_span));
+        left           = expand(expansion);
+        continue;
+      }
+
       case TT::operatorRange: {
         token             = lexer.next();
         bool is_inclusive = maybe(TT::operatorEqual);
@@ -722,10 +767,13 @@ P::parse_primary(bool allow_struct_literal) {
       return make_node<move_expr_t>(
         ast_node_t::eMove, { parse_primary(allow_struct_literal) }, token.location, source);
     case TT::keywordSelf:
-    case TT::identifier:
-      primary = make_node<symbol_expr_t>(
-        ast_node_t::eSymbol, { .path = parse_specialized_path() }, token.location, source);
+    case TT::identifier: {
+      source_location_t location = { token.location.end, {} };
+      auto              path     = parse_specialized_path();
+      location.end               = token.location.end;
+      primary = make_node<symbol_expr_t>(ast_node_t::eSymbol, { .path = path }, location, source);
       return primary;
+    }
     case TT::keywordSizeOf:
       expect(TT::keywordSizeOf);
       expect(TT::delimiterLParen);
@@ -785,6 +833,9 @@ P::parse_primary(bool allow_struct_literal) {
     }
     case TT::delimiterLBrace: {
       return parse_block();
+    }
+    case TT::keywordIf: {
+      return parse_if();
     }
     case TT::delimiterLBracket: {
       return parse_array_initializer();
@@ -861,41 +912,38 @@ P::parse_for() {
       (lexer.peek(1).type == TT::keywordIn || lexer.peek(1).type == TT::operatorBind ||
        lexer.peek(1).type == TT::operatorColon)) {
     expect(TT::identifier);
-    for_stmt.init = make_node<declaration_t>(
-      ast_node_t::eDeclaration,
-      { .identifier = { { source->string(token.location) } },
-        .value      = make_node<literal_expr_t>(ast_node_t::eLiteral,
-                                                { .value = "0", .type = literal_type_t::eInteger },
-                                           token.location,
-                                           source),
-        .is_mutable = true },
-      location,
-      source);
+
+    for_stmt.init = make_node<declaration_t>(ast_node_t::eDeclaration,
+                                             { .identifier = { { source->string(token.location) } },
+                                               .value      = nullptr,
+                                               .is_mutable = true },
+                                             location,
+                                             source);
 
     if (maybe(TT::keywordIn)) {
       // Case: for i in 0..num_files
       for_stmt.condition = parse_expression(0, false);
+
+      if (for_stmt.condition->kind == ast_node_t::eRangeExpr) {
+        for_stmt.init->as.declaration->value = for_stmt.condition->as.range_expr->min;
+      }
     } else if (maybe(TT::operatorBind)) {
       // Case: for i := 0; i < n; i += 1
       for_stmt.init = parse_expression(0, false);
       expect(TT::delimiterSemicolon);
       for_stmt.condition = parse_expression(0, false);
       expect(TT::delimiterSemicolon);
-      for_stmt.action = parse_expression(0, true); // Post can usually allow structs
+      for_stmt.action = parse_expression(0, false);
     }
   } else {
     // Case: for 0..num_files
     // No iterator name, just a range expression
-    for_stmt.init = make_node<declaration_t>(
-      ast_node_t::eDeclaration,
-      { .identifier = { { "_" } },
-        .value      = make_node<literal_expr_t>(ast_node_t::eLiteral,
-                                                { .value = "0", .type = literal_type_t::eInteger },
-                                           token.location,
-                                           source) },
-      token.location,
-      source);
-    for_stmt.condition = parse_expression(0, false);
+    for_stmt.init                        = make_node<declaration_t>(ast_node_t::eDeclaration,
+                                                                    { .identifier = { { "_" } }, .value = nullptr },
+                                             token.location,
+                                             source);
+    for_stmt.condition                   = parse_expression(0, false);
+    for_stmt.init->as.declaration->value = for_stmt.condition->as.range_expr->min;
   }
 
   // Parse the body

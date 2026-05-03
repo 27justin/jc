@@ -203,6 +203,24 @@ start:
           source->next();
           goto next;
         }
+      case tt::operatorPlus:
+        if (source->peek() == '=') {
+          token.type = tt::operatorPlusEqual;
+          source->next();
+          goto next;
+        }
+      case tt::operatorMultiply:
+        if (source->peek() == '=') {
+          token.type = tt::operatorMultiplyEqual;
+          source->next();
+          goto next;
+        }
+      case tt::operatorMod:
+        if (source->peek() == '=') {
+          token.type = tt::operatorModEqual;
+          source->next();
+          goto next;
+        }
       case tt::operatorExclamation:
         if (source->peek() == '=') {
           token.type = tt::operatorNotEqual;
@@ -239,10 +257,18 @@ start:
           }
 
           goto start;
+        } else if (source->peek() == '=') {
+          token.type = tt::operatorDivideEqual;
+          source->next();
+          goto next;
         }
       case tt::operatorAnd:
         if (source->peek() == '&') {
           token.type = tt::operatorBooleanAnd;
+          source->next();
+          goto next;
+        } else if (source->peek() == '=') {
+          token.type = tt::operatorBitAndEqual;
           source->next();
           goto next;
         }
@@ -251,10 +277,18 @@ start:
           token.type = tt::operatorBooleanOr;
           source->next();
           goto next;
+        } else if (source->peek() == '=') {
+          token.type = tt::operatorBitOrEqual;
+          source->next();
+          goto next;
         }
       case tt::operatorMinus:
         if (source->peek() == '>') {
           token.type = tt::operatorArrow;
+          source->next();
+          goto next;
+        } else if (source->peek() == '=') {
+          token.type = tt::operatorMinusEqual;
           source->next();
           goto next;
         }

@@ -850,9 +850,10 @@ A::analyze_symbol(N node) {
   }
 
   if (!path.is_simple()) {
-    path            = resolve_path(path);
+    path            = resolve_path(symbol->path);
     auto candidates = scope().candidates(path);
     if (!candidates.empty()) {
+      symbol->path = path;
       return monomorphize(candidates.front(), path);
     }
   }
@@ -986,6 +987,10 @@ QT
 A::analyze_struct_decl(N node) {
   struct_decl_t  *decl = node->as.struct_decl;
   struct_layout_t layout{};
+
+  // Register the binding as void for now, structs can be
+  // self-referential through pointers.
+  auto temporary_type = scope().types.add_alias(*current_binding, resolve_type("void"), false);
 
   for (auto &memb : decl->members) {
     layout.members.push_back(struct_layout_t::field_t{
@@ -1311,6 +1316,10 @@ A::is_cast_convertible(QT from, QT into) {
 
   if ((into->kind == type_kind_t::eInt || into->kind == type_kind_t::eUint) &&
       (from->kind == type_kind_t::eInt || from->kind == type_kind_t::eUint))
+    return true;
+
+  if ((into->kind == type_kind_t::eInt && from->kind == type_kind_t::eFloat) ||
+      (from->kind == type_kind_t::eInt && into->kind == type_kind_t::eFloat))
     return true;
 
   // Casting aliases is allowed.

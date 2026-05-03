@@ -135,6 +135,28 @@ to_string(token_type_t ty) {
     case tt::operatorDeref:
       return ".*";
 
+    case tt::operatorPlusEqual:          // +=
+      return "+=";
+    case tt::operatorMinusEqual:         // -=
+      return "-=";
+    case tt::operatorMultiplyEqual:      // *=
+      return "*=";
+    case tt::operatorDivideEqual:        // /=
+      return "/=";
+    case tt::operatorModEqual:           // %=
+      return "%=";
+
+    case tt::operatorBitShiftLeftEqual:  // <<=
+      return "<<=";
+    case tt::operatorBitShiftRightEqual: // >>=
+      return ">>=";
+    case tt::operatorBitXorEqual:        // ^=
+      return "^=";
+    case tt::operatorBitOrEqual:         // |=
+      return "|=";
+    case tt::operatorBitAndEqual:        // &=
+      return "&=";
+
     case tt::delimiterLParen:
       return "(";
     case tt::delimiterRParen:

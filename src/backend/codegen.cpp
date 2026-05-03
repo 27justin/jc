@@ -133,10 +133,12 @@ codegen_t::init_target() {
 std::string
 codegen_t::compile_to_object(std::optional<std::string> filename) {
   std::error_code EC;
-  auto obj_file = std::filesystem::path(filename.value_or(std::filesystem::current_path().string() +
-                                                          '/' + std::string(source->name())))
-                    .replace_extension(".o")
-                    .string();
+  auto            obj_file =
+    std::filesystem::path(
+      filename.value_or(std::filesystem::current_path().string() + '/' +
+                        std::filesystem::path(std::string(source->name())).filename().string()))
+      .replace_extension(".o")
+      .string();
 
   llvm::LoopAnalysisManager     LAM;
   llvm::FunctionAnalysisManager FAM;
@@ -597,6 +599,22 @@ codegen_t::cast(SP<type_t> type, const llvm_value_t &value) {
   // Casting from known size array into runtime slice.
   if (value.type->isArrayTy() && type->kind == type_kind_t::eSlice) {
     return slice_create_from_array(load(value));
+  }
+
+  if (target_type->isFloatingPointTy() && value.type->isIntegerTy()) {
+    return llvm_value_t(
+      builder->CreateSIToFP(load(value).value, target_type), target_type, true, type);
+  }
+
+  if (target_type->isIntegerTy() && value.type->isFloatingPointTy()) {
+    return llvm_value_t(
+      builder->CreateFPToSI(load(value).value, target_type), target_type, true, type);
+  }
+
+  if (target_type->isFloatTy() && value.type->isFloatTy() &&
+      target_type->getPrimitiveSizeInBits() != value.type->getPrimitiveSizeInBits()) {
+    return llvm_value_t(
+      builder->CreateFPCast(load(value).value, target_type), target_type, true, type);
   }
 
   return value;
@@ -1300,7 +1318,8 @@ VISITOR(binop) {
   // auto right = visit_node(expr->right);
   SP<llvm_value_t> left{}, right{};
 
-  if (left_type->isIntOrPtrTy() && right_type->isIntOrPtrTy()) {
+  if ((left_type->isIntOrPtrTy() && right_type->isIntOrPtrTy()) ||
+      (left_type->isFloatingPointTy() || right_type->isFloatingPointTy())) {
     // Figure out the bitsize of each type, we coalesce to the biggest
     // variant.
     SP<type_t> int_result_type;
@@ -1318,7 +1337,7 @@ VISITOR(binop) {
       result_type     = ensure_type(int_result_type);
     }
 
-    if (left_type != result_type) {
+    if (left_type != result_type && !result_type->isFloatingPointTy()) {
       left = visit_node(expr->left);
       left = std::make_shared<llvm_value_t>(builder->CreateIntCast(load(left_type, *left).value,
                                                                    result_type,
@@ -1329,7 +1348,8 @@ VISITOR(binop) {
       left_type = result_type;
     }
 
-    if (right_type != result_type && !result_type->isPointerTy()) {
+    if (right_type != result_type && !result_type->isPointerTy() &&
+        !result_type->isFloatingPointTy()) {
       right = visit_node(expr->right);
       right = std::make_shared<llvm_value_t>(builder->CreateIntCast(load(right_type, *right).value,
                                                                     result_type,
@@ -1340,6 +1360,21 @@ VISITOR(binop) {
       right_type = result_type;
     }
 
+    if (left_type->isFloatingPointTy() && !right_type->isFloatingPointTy()) {
+      right = std::make_shared<llvm_value_t>(
+        builder->CreateSIToFP(load(visit_node(expr->right)).value, left_type),
+        left_type,
+        true,
+        expr->left->type);
+    }
+    if (!left_type->isFloatingPointTy() && right_type->isFloatingPointTy()) {
+      left = std::make_shared<llvm_value_t>(
+        builder->CreateSIToFP(load(visit_node(expr->left)).value, right_type),
+        right_type,
+        true,
+        expr->right->type);
+    }
+
     if (is_scalar_binop(expr->op)) {
       if (!left)
         left = visit_node(expr->left);
@@ -1347,14 +1382,49 @@ VISITOR(binop) {
       if (!right)
         right = visit_node(expr->right);
 
+      if (left->type->isPointerTy()) {
+        // Use CreateGEP
+        auto        element_type      = left->base_type->base_type();
+        llvm::Type *llvm_element_type = ensure_type(element_type);
+        if (element_type->size == 0) { // any type
+          llvm_element_type = builder->getInt8Ty();
+        }
+
+        llvm::Value *index = load(right).value;
+        if (expr->op == binop_type_t::eSubtract) {
+          index = builder->CreateNeg(index, "ptrsub.idx");
+        }
+
+        return std::make_shared<llvm_value_t>(
+          builder->CreateGEP(llvm_element_type, load(left).value, { index }),
+          llvm_element_type,
+          true,
+          element_type);
+      }
+
+      if (left_type->isFloatingPointTy() && right_type->isFloatingPointTy()) {
+        if (right_type->getPrimitiveSizeInBits() != left_type->getPrimitiveSizeInBits()) {
+          right = std::make_shared<llvm_value_t>(
+            builder->CreateFPCast(load(right_type, *right).value, left_type),
+            left_type,
+            true,
+            left->base_type);
+          right_type = left_type;
+        }
+      }
+
       auto intermediate = builder->CreateBinOp(map_binop_type(left_type, right_type, expr->op),
                                                load(left_type, *left).value,
                                                load(right_type, *right).value);
+      if (left_type->isFloatingPointTy())
+        return std::make_shared<llvm_value_t>(intermediate, result_type, true, int_result_type);
+
       return std::make_shared<llvm_value_t>(
         builder->CreateIntCast(intermediate, result_type, int_result_type->is_signed()),
         result_type,
         true,
         int_result_type);
+
     } else {
       // && short-circuit evaluation
       if (expr->op == binop_type_t::eAnd) {
@@ -1461,8 +1531,14 @@ VISITOR(binop) {
           break;
       }
 
+      if (left_type->isIntOrPtrTy())
+        return std::make_shared<llvm_value_t>(
+          builder->CreateICmp(inst, load(left_type, *left).value, load(right_type, *right).value),
+          builder->getInt1Ty(),
+          true);
+
       return std::make_shared<llvm_value_t>(
-        builder->CreateICmp(inst, load(left_type, *left).value, load(right_type, *right).value),
+        builder->CreateFCmp(inst, load(left_type, *left).value, load(right_type, *right).value),
         builder->getInt1Ty(),
         true);
     }
@@ -1846,7 +1922,7 @@ VISITOR(member_access) {
   // 2. Ensure we are dealing with a struct/contract/slice
   auto base_type = base->base_type;
   if (base_type->kind != type_kind_t::eStruct && base_type->kind != type_kind_t::eSlice &&
-      base_type->kind != type_kind_t::eContract) {
+      base_type->kind != type_kind_t::eContract && base_type->kind != type_kind_t::ePointer) {
     throw std::runtime_error("Member access on non-aggregate type");
   }
 
