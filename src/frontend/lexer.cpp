@@ -114,20 +114,12 @@ keyword(std::string_view kw) {
     return tt::keywordReturn;
   if (kw == "fn")
     return tt::keywordFn;
-  if (kw == "extend")
-    return tt::keywordExtend;
-  if (kw == "with")
-    return tt::keywordWith;
-  if (kw == "mixin")
-    return tt::keywordMixin;
   if (kw == "in")
     return tt::keywordIn;
   if (kw == "auto")
     return tt::keywordAuto;
   if (kw == "struct")
     return tt::keywordStruct;
-  if (kw == "static")
-    return tt::keywordStatic;
   if (kw == "type")
     return tt::keywordType;
   if (kw == "let")
@@ -164,6 +156,10 @@ keyword(std::string_view kw) {
     return tt::keywordUninitialized;
   if (kw == "zero")
     return tt::keywordZero;
+  if (kw == "or")
+    return tt::keywordOr;
+  if (kw == "is")
+    return tt::keywordIs;
 
   return tt::identifier;
 }

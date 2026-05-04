@@ -51,8 +51,9 @@ class parser_t {
 
   bool maybe(token_type_t);
 
-  bool         peek(token_type_t);
-  token_type_t peek_any(std::vector<token_type_t>);
+  bool peek(token_type_t);
+  bool
+  peek_any(std::vector<token_type_t>, token_type_t *next = nullptr);
 
   specialized_path_t
   parse_specialized_path();

@@ -16,20 +16,12 @@ to_string(token_type_t ty) {
       return "return";
     case tt::keywordFn:
       return "fn";
-    case tt::keywordExtend:
-      return "extend";
-    case tt::keywordWith:
-      return "with";
-    case tt::keywordMixin:
-      return "mixin";
     case tt::keywordIn:
       return "in";
     case tt::keywordAuto:
       return "auto";
     case tt::keywordStruct:
       return "struct";
-    case tt::keywordStatic:
-      return "static";
     case tt::keywordType:
       return "type";
     case tt::keywordLet:
@@ -64,6 +56,10 @@ to_string(token_type_t ty) {
       return "slice";
     case tt::keywordEnum:
       return "enum";
+    case tt::keywordIs:
+      return "is";
+    case tt::keywordOr:
+      return "or";
 
     case tt::literalString:
       return "string literal";
@@ -232,13 +228,9 @@ is_keyword(token_type_t ty) {
     case T::keywordWhile:
     case T::keywordReturn:
     case T::keywordFn:
-    case T::keywordExtend:
-    case T::keywordWith:
-    case T::keywordMixin:
     case T::keywordIn:
     case T::keywordAuto:
     case T::keywordStruct:
-    case T::keywordStatic:
     case T::keywordType:
     case T::keywordLet:
     case T::keywordVar:
@@ -257,6 +249,8 @@ is_keyword(token_type_t ty) {
     case T::keywordSlice:
     case T::keywordEnum:
     case T::keywordUnion:
+    case T::keywordIs:
+    case T::keywordOr:
       return true;
     default:
       return false;

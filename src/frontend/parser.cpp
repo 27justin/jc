@@ -232,28 +232,17 @@ P::expect_any(std::vector<TT> types) {
   throw parse_error_t{ .diagnostics = diagnostics };
 }
 
-token_type_t
-P::peek_any(std::vector<TT> types) {
+bool
+P::peek_any(std::vector<TT> types, token_type_t *next) {
   token_t current = lexer.peek();
   for (TT ty : types) {
     if (current.type == ty) {
-      return current.type;
+      if (next != nullptr)
+        *next = ty;
+      return true;
     }
   }
-
-  std::stringstream ss;
-  for (int64_t i = 0; i < types.size(); ++i) {
-    if (i > 0)
-      ss << ", ";
-    ss << "`" << to_string(types[i]) << "`";
-  }
-
-  auto err = error(source,
-                   current.location,
-                   fmt(UNEXPECTED_TOKEN, to_string(current.type)),
-                   fmt(UNEXPECTED_TOKEN_ANY_DETAIL, to_string(current.type), ss.str()));
-  diagnostics.messages.push_back(err);
-  throw parse_error_t{ .diagnostics = diagnostics };
+  return false;
 }
 
 bool
@@ -668,6 +657,50 @@ P::parse_expression(int min_binding_power, bool allow_struct_literal) {
           { start, token.location.end },
           source);
         break;
+      }
+    }
+
+    // Postfix modifiers. `defer`, `is ... or ...`
+    token_type_t sugar;
+    while (peek_any({ TT::keywordDefer, TT::keywordIs }, &sugar)) {
+      switch (sugar) {
+        case TT::keywordDefer: {
+          expect(TT::keywordDefer);
+          auto defer = parse_expression(min_binding_power, allow_struct_literal);
+
+          if (left->kind == ast_node_t::eExprSugar)
+            left->as.sugar->defer = defer;
+          else
+            left = make_node<expr_sugar_t>(ast_node_t::eExprSugar,
+                                           { .defer = defer, .expression = left },
+                                           { left->location.start, token.location.end },
+                                           source);
+          break;
+        }
+        case TT::keywordIs: {
+          expect(TT::keywordIs);
+          auto condition = parse_expression(min_binding_power, allow_struct_literal);
+          expect(TT::keywordOr);
+          auto or_else = parse_expression(min_binding_power, allow_struct_literal);
+
+          if (left->kind == ast_node_t::eExprSugar) {
+            left->as.sugar->is_or_chain.is        = condition;
+            left->as.sugar->is_or_chain.or_action = or_else;
+          } else {
+            left = make_node<expr_sugar_t>(
+              ast_node_t::eExprSugar,
+              {
+                .is_or_chain = { .is = condition, .or_action = or_else },
+                  .expression = left
+            },
+              { left->location.start, token.location.end },
+              source);
+          }
+          break;
+        }
+        default: {
+          assert(false && "Unhandled Expression Sugar");
+        }
       }
     }
   }
@@ -1481,7 +1514,7 @@ exit:
 
 SP<ast_node_t>
 P::parse_identifier() {
-  peek_any({ TT::identifier });
+  assert(lexer.peek().type == token_type_t::identifier);
 
   // <path> : <type>? = ...
   // Path here might either be:

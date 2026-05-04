@@ -78,6 +78,7 @@ struct member_access_expr_t;
 struct enum_decl_t;
 struct pointer_coerce_expr_t;
 struct import_expr_t;
+struct expr_sugar_t;
 
 enum class literal_type_t { eString, eInteger, eFloat, eBool };
 
@@ -125,7 +126,8 @@ enum class literal_type_t { eString, eInteger, eFloat, eBool };
   X(eZero)                                                                                         \
   X(eUninitialized)                                                                                \
   X(ePointerCoerce)                                                                                \
-  X(eImport)
+  X(eImport)                                                                                       \
+  X(eExprSugar)
 
 struct ast_node_t {
   ~ast_node_t();
@@ -180,6 +182,7 @@ struct ast_node_t {
       enum_decl_t             *enum_decl;
       pointer_coerce_expr_t   *pointer_coerce_expr;
       import_expr_t           *import_expr;
+      expr_sugar_t            *sugar;
       void                    *raw;
     };
   } as;
@@ -423,6 +426,17 @@ struct pointer_coerce_expr_t {
 struct import_expr_t {
   std::string                path;
   std::optional<type_decl_t> type;
+};
+
+struct expr_sugar_t {
+  SP<ast_node_t> defer;
+  struct {
+    SP<ast_node_t> is;
+    SP<ast_node_t>
+      or_action; // Run if `is` is false `buffer.read(4096) is _.size > 4096 or { ... }`
+  } is_or_chain;
+
+  SP<ast_node_t> expression;
 };
 
 std::string
