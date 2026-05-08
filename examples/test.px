@@ -1,28 +1,39 @@
+let shader := import file:"./pixel_shader.ps"
+let function := import C:printf as fn (!u8, ..) -> i32
+let libc.printf := import C:printf as fn (!u8) -> i32
+let contrast := fn () -> (r: u8, g: u8, b: u8) {}
 
-let some_value: i32 = zero
-var another_value: i32 = zero
-
-printf := @(extern: "C", import: "printf") fn (_: !u8, ..) -> i32
-
-testfn := fn () -> bool {
-  defer printf("test\n");
-
-  if false {
-    return false;
-  }
-
-  var i: i64 = 0;
-  while i < 10 {
-    if i > 5 {
-      return false;
-    }
-    i = i + 1;
-  }
-
-  false
+let err := enum {
+  out_of_memory = 10,
+  player_dead
 }
 
-main := fn () -> i32 {
-  testfn();
-  0
+let player := struct {
+  name: []u8
+  health: i32
+  seat: !any
 }
+
+let state := enum {
+  running(player),
+  finished
+}
+
+let main := fn () -> i32 {
+  let some := zero;
+
+  let str := std.string.init(std.HEAP);
+  str.append("Data") is :ok or panic();
+
+
+  let tuple := (1, 2);
+  let (tuple, destructuring) := tuple;
+  (let tuple, var destructuring) := tuple;
+
+
+  // Arrays, VLA and constant
+  //let const: [4]i32 = zero;
+  //let vla: []i32 := [const[3]]u8();
+
+}
+

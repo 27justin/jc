@@ -12,33 +12,35 @@ enum class diagnostic_level_t { eError, eWarn, eInfo };
 
 struct diagnostic_t {
   diagnostic_level_t level;
-  std::string        message,       //< Syntax error, erc.
-    detail,                         // Expected X got Y
-    suggestion;                     // Did you mean ...
+
+  enum class code_t {
+    syntax_error,
+    symbol_not_found,
+    member_not_found,
+    type_not_found,
+    not_a_function,
+    not_a_struct,
+
+    incompatible_implicit_cast,
+    incompatible_explicit_cast,
+    too_few_arguments,
+    too_many_arguments,
+    argument_type_mismatch,
+    unknown_parameter,
+    parameter_already_filled,
+    branch_type_mismatch,
+    non_const_expression,
+    infer_error,
+    import_not_found,
+    address_of_rvalue,
+    incompatible_binary_operation,
+  } code;
+
+  std::vector<std::string> arguments;
 
   std::shared_ptr<source_t> source;
   source_location_t         origin; //< What triggered the diagnostic
 };
-
-struct diagnostic_stack_t {
-  std::vector<diagnostic_t> messages;
-};
-
-#define fmt(...) std::format(__VA_ARGS__)
-
-diagnostic_t
-warn(std::shared_ptr<source_t> source,
-     source_location_t,
-     const std::string &message,
-     std::string        detail     = "",
-     std::string        suggestion = "");
-
-diagnostic_t
-error(std::shared_ptr<source_t> source,
-      source_location_t,
-      const std::string &message,
-      std::string        detail     = "",
-      std::string        suggestion = "");
 
 std::string
 serialize(const diagnostic_t &);

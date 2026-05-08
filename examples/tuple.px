@@ -1,11 +1,18 @@
 main := fn () -> i32 {
   // Tuples
+  let tuple: (i32, i32) = (0, 1);
 
-  // Unnamed tuple
-  let tuple1: (i32, i32) = (42, 1);
+  let v1, v2 := tuple;
+  var v1_1, v2_1 := tuple;
+  (let v1_2, var v2_2) := tuple;
 
-  // Named tuple
-  let tuple2: (r: i8, g: i8, b: i8) = (r: 255, g: 0, b: 0);
 
-  tuple1.0
+  let named := (health: 100, alive: true);
+  let (:health, :alive) := named;
+  let (health: h, alive: a) := named;
+
+  v2_1
 }
+
+
+

@@ -12,6 +12,8 @@ to_string(token_type_t ty) {
       return "for";
     case tt::keywordWhile:
       return "while";
+    case tt::keywordDo:
+      return "do";
     case tt::keywordReturn:
       return "return";
     case tt::keywordFn:
@@ -213,6 +215,9 @@ is_operator(token_type_t ty) {
     case T::operatorCaret:
     case T::operatorBind:
     case T::operatorDeref:
+    case T::delimiterLParen:
+    case T::delimiterLAngle: // <
+    case T::delimiterRAngle: // >
       return true;
     default:
       return false;
@@ -226,6 +231,7 @@ is_keyword(token_type_t ty) {
     case T::keywordIf:
     case T::keywordFor:
     case T::keywordWhile:
+    case T::keywordDo:
     case T::keywordReturn:
     case T::keywordFn:
     case T::keywordIn:

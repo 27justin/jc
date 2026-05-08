@@ -1,175 +1,129 @@
 #pragma once
 
+#include "backend/type.hpp"
+#include "backend/type_registry.hpp"
 #include "frontend/ast.hpp"
 #include "frontend/diagnostic.hpp"
 #include "frontend/parser.hpp"
-
-#include "frontend/path.hpp"
 #include "frontend/source.hpp"
-#include "scope.hpp"
-#include "symbol.hpp"
-#include "type.hpp"
 
 #include <unordered_map>
 #include <vector>
 
-struct semantic_info_t {
-  translation_unit_t                                     unit;
-  SP<scope_t>                                            scope;
-  std::unordered_map<specialized_path_t, SP<ast_node_t>> template_instantiations;
-  std::unordered_map<std::string, SP<type_t>>            imported_symbols;
-};
+#define UNREACHABLE assert(false && "Unreachable")
 
-struct analyze_error_t {
-  diagnostic_stack_t diagnostics;
-};
+struct analyzer_scope_t {
+  std::map<std::string, qualified_type_t *> symbols;
+  analyzer_scope_t                         *parent = nullptr;
 
-enum class value_category_t { eLValue, eRValue };
+  analyzer_scope_t() = default;
+  explicit analyzer_scope_t(analyzer_scope_t &);
+  analyzer_scope_t(analyzer_scope_t &&) = delete;
+
+  void
+  operator=(const analyzer_scope_t &) = delete;
+  void
+  operator=(analyzer_scope_t &&) = delete;
+
+  qualified_type_t *
+  resolve(const std::string &name);
+
+  template<typename _Type, typename... _Args>
+  void
+  add(const std::string &name, _Args &&...args) {
+    symbols[name] = std::make_unique<_Type>(std::forward<_Args>(args)...);
+  }
+
+  void
+  add(const std::string &name, qualified_type_t *);
+};
 
 struct analyzer_t {
-  semantic_info_t
-  analyze(translation_unit_t tu);
+  using analyze_fn = std::function<qualified_type_t *(ast_node_t *, analyzer_t &)>;
+  type_registry_t registry_;
+
+  std::vector<UP<analyzer_scope_t>> scopes_;
+
+  static auto &
+  _analyzer_registry() {
+    static std::map<std::type_index, analyze_fn> analyzers;
+    return analyzers;
+  }
+
+  static void register_analyzer(std::type_index, analyze_fn);
+
+  template<typename _NodeType>
+  static void
+  register_analyzer(std::function<qualified_type_t *(_NodeType &, analyzer_t &)> func) {
+    _analyzer_registry()[typeid(_NodeType)] = [func](ast_node_t *node,
+                                                     analyzer_t &A) -> qualified_type_t * {
+      return func(*static_cast<_NodeType *>(node), A);
+    };
+  }
 
   analyzer_t(std::shared_ptr<source_t> src)
-    : source(src) {};
+    : source(src) {
+    scopes_.emplace_back(make_unique<analyzer_scope_t>());
+  };
 
   void
   set_include_directories(const std::vector<std::string> &);
 
-  private:
-  using string_list = std::vector<std::string>;
+  qualified_type_t *
+  analyze(UP<ast_node_t> &);
 
-  scope_t &
-  push_scope();
-  scope_t &
+  qualified_type_t *
+  analyze(ast_node_t *);
+
+  // Preliminary symbol pass, registers nominal symbols to be
+  // self-referential.
+  void
+  pass_symbols(const std::vector<UP<ast_node_t>> &);
+
+  void
+  stub_symbol_declaration(const declaration_node_t &);
+
+  void
+  analyze_type_declaration(ast_node_t &node);
+
+  void
+  analyze_symbol_declaration(ast_node_t &node);
+
+  analyzer_scope_t &
   scope();
+
+  void
+  push_scope();
+
   void
   pop_scope();
 
-  void push_type_hint(SP<type_t>);
-  void
-  pop_type_hint();
-  SP<type_t>
-  type_hint();
+  qualified_type_t *
+  resolve_fully_qualified_path(const std::vector<std::string> &path);
 
-  void push_function(SP<type_t>);
-  void
-  pop_function();
-  SP<type_t>
-  current_function();
+  qualified_type_t *
+  resolve_type_path(qualified_type_t *, const std::string &);
 
+  std::vector<qualified_type_t *> type_hints;
+
+  void
+  error(node_location_t, diagnostic_t::code_t, const std::vector<std::string> &args);
+
+  using string_list = std::vector<std::string>;
+  string_list include_directories;
+
+  bool
+  is_lvalue(const ast_node_t *) const;
+
+  private:
   std::shared_ptr<source_t> source;
-
-  std::vector<SP<scope_t>>         scope_stack;
-  std::vector<SP<type_t>>          function_stack;
-  std::vector<SP<type_t>>          type_hint_stack; //< Used to infer types in certain cases.
-  std::unique_ptr<semantic_info_t> info;
-
-  diagnostic_stack_t diagnostics;
 
   // ----------
   //   Analysis
   // ----------
-  using QT = SP<type_t>;
-  using N  = SP<ast_node_t>;
-
-  std::optional<specialized_path_t> current_binding;
-  std::optional<attribute_decl_t>   current_attribute;
-
-  bool is_rvalue(N);
-  bool is_lvalue(N);
-  bool is_mutable(N);
-
-  QT
-     analyze_node(N &);
-  QT analyze_binding(N);
-
-  QT analyze_function_decl(N, SP<type_t>);
-  QT
-     analyze_function_decl(const function_decl_t &, SP<type_t>);
-  QT analyze_function_impl(N, SP<type_t>);
-  QT analyze_block(N);
-  QT analyze_literal(N);
-  QT analyze_symbol(N);
-  QT analyze_deref(N);
-  QT analyze_type_alias(N);
-  QT analyze_struct_decl(N);
-  QT analyze_struct_expr(N);
-  QT analyze_contract(N);
-  QT analyze_declaration(N);
-  QT analyze_call(N);
-  QT analyze_cast(N);
-  QT analyze_binop(N);
-  QT analyze_addr_of(N);
-  QT analyze_defer(N);
-  QT analyze_move(N);
-  QT analyze_nil(N);
-  QT analyze_if(N);
-  QT analyze_assignment(N);
-  QT analyze_while(N);
-  QT analyze_for(N);
-  QT analyze_range(N);
-  QT analyze_sizeof(N);
-  QT analyze_array_access(N);
-  QT analyze_slice(N);
-  QT analyze_return(N);
-  QT analyze_member_access(N);
-  QT analyze_array_initialize(N);
-  QT analyze_attribute(N);
-  QT analyze_tuple(N);
-  QT analyze_enum(N);
-  QT analyze_unary(N);
-  QT analyze_zero(N);
-  QT analyze_uninitialized(N);
-  QT analyze_pointer_coerce(N);
-  QT analyze_import(N);
-
-  bool is_static_dispatch(N);
-  bool is_dynamic_dispatch(N);
-
-  bool
-  is_cast_convertible(QT from, QT into);
-  bool
-  is_implicit_convertible(QT from, QT into);
-  bool
-  satisfies_contract(QT type, QT contract);
 
   void
-  import_source_file(const std::string &);
-
-  QT resolve_receiver(std::optional<specialized_path_t>);
-  QT
-  resolve_member_access(QT left, const std::string &member_name);
-  QT
-  resolve_tuple_element(QT tuple, const std::string &member_name);
-  QT
-  resolve_enum_element(QT enum_, const std::string &member_name);
-
-  QT
-  resolve_binop_result_type(binop_type_t, QT left, QT right);
-
-  value_category_t
-  resolve_value_category(N node);
-
-  QT
-  monomorphize(SP<template_decl_t> template_, specialized_path_t instantiation);
-
-  /// Resolve a type via the type registry, potentially monomorphing templates if type is templated.
-  QT
-  resolve_type(const type_decl_t &);
-  QT
-  resolve_type(const specialized_path_t &);
-  QT
-  resolve_type(const std::string &);
-
-  bool
-     can_fit_literal(const std::string &, QT target_type);
-  QT ensure_concrete(QT);
-  bool
-  is_within_bounds(int64_t, QT);
-
-  specialized_path_t
-  resolve_path(const specialized_path_t &);
-
-  string_list include_directories;
+  annotate(ast_node_t &, qualified_type_t *);
+  void
+  annotate(UP<ast_node_t> &, qualified_type_t *);
 };

@@ -110,6 +110,8 @@ keyword(std::string_view kw) {
     return tt::keywordFor;
   if (kw == "while")
     return tt::keywordWhile;
+  if (kw == "do")
+    return tt::keywordDo;
   if (kw == "return")
     return tt::keywordReturn;
   if (kw == "fn")

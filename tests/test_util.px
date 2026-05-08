@@ -1,2 +1,0 @@
-print := @(extern: "C", import: "printf") fn (_: !u8, ..)
-

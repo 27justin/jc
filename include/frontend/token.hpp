@@ -10,6 +10,7 @@ enum class token_type_t {
   keywordIf,
   keywordFor,
   keywordWhile,
+  keywordDo,
   keywordReturn,
   keywordFn,
   keywordIn,

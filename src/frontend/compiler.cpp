@@ -1,10 +1,12 @@
+#include "frontend/diagnostic.hpp"
+#include "frontend/dumper.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 
 #include <backend/analyzer.hpp>
-#include <backend/codegen.hpp>
+#include <codegen/codegen.hpp>
 #include <frontend/lexer.hpp>
 #include <frontend/parser.hpp>
 #include <frontend/source.hpp>
@@ -75,45 +77,57 @@ main(int argc, char **argv) {
     lexer_t lexer(src);
 
     try {
-      parser_t parser(lexer, src);
-      auto     tu = parser.parse();
+      parser_t     parser(lexer, src);
+      auto         tu = parser.parse();
+      ast_dumper_t dump{};
 
       analyzer_t analyzer(src);
       analyzer.set_include_directories(include_directories);
 
-      auto su = analyzer.analyze(tu);
-
       if (!output_ast) {
-        codegen_t codegen(src, std::move(su));
+        try {
+          // Collect, analyze and register structs, enums, etc.
+          analyzer.pass_symbols(tu.declarations);
 
-        if (opt_level)
-          codegen.set_opt_level(opt_level.value());
+          // Verify implementation details
+          for (auto &node : tu.declarations) {
+            analyzer.analyze(node);
+          }
 
-        codegen.generate();
+          codegen_t codegen(src, tu);
 
-        if (output_object_file || output_full_binary) {
-          object_files.push_back(
-            codegen.compile_to_object(output_object_file ? output_file : std::nullopt));
+          if (opt_level)
+            codegen.set_opt_level(opt_level.value());
+
+          codegen.generate();
+
+          if (output_object_file || output_full_binary) {
+            object_files.push_back(
+              codegen.compile_to_object(output_object_file ? output_file : std::nullopt));
+          }
+
+          if (output_llvm_ir)
+            codegen.compile_to_llvm_ir(output_file);
+
+        } catch (diagnostic_t &diag) {
+          std::cerr << serialize(diag) << "\n";
+          std::exit(1);
         }
-
-        if (output_llvm_ir)
-          codegen.compile_to_llvm_ir(output_file);
       } else {
-        for (auto &ast_node : su.unit.declarations) {
-          dump_ast(*ast_node);
+        dump_context_t ctx{ .out = std::cout, .indent = 0 };
+        for (auto &ast_node : tu.declarations) {
+          dump.dump(ast_node.get(), ctx);
         }
       }
     } catch (const parse_error_t &err) {
-      for (auto &msg : err.diagnostics.messages) {
-        std::cerr << serialize(msg) << "\n";
-      }
+      std::cerr << serialize(err.error) << "\n";
       std::exit(1);
-    } catch (const analyze_error_t &err) {
-      for (auto &msg : err.diagnostics.messages) {
-        std::cerr << serialize(msg) << "\n";
-      }
-      std::exit(1);
-    }
+    } /* catch (const analyze_error_t &err) {
+       for (auto &msg : err.diagnostics.messages) {
+         std::cerr << serialize(msg) << "\n";
+       }
+       std::exit(1);
+     }*/
   }
 
   // Link (only if `output_full_binary`)

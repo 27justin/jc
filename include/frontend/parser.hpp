@@ -3,21 +3,24 @@
 #include <memory>
 
 #include "frontend/ast.hpp"
+#include "frontend/ast/declaration.hpp"
+#include "frontend/ast/destructure.hpp"
+#include "frontend/ast/function.hpp"
 #include "frontend/diagnostic.hpp"
 #include "frontend/lexer.hpp"
-#include "frontend/path.hpp"
 #include "frontend/source.hpp"
 #include "frontend/token.hpp"
 
 struct translation_unit_t {
-  std::shared_ptr<source_t>       source;
-  std::vector<SP<ast_node_t>>     declarations;
-  std::vector<specialized_path_t> imports;
+  std::shared_ptr<source_t>   source;
+  std::vector<UP<ast_node_t>> declarations;
 };
 
 struct parse_error_t {
-  diagnostic_stack_t diagnostics;
+  diagnostic_t error;
 };
+
+using std::make_unique;
 
 class parser_t {
   public:
@@ -33,10 +36,9 @@ class parser_t {
 
   translation_unit_t
   parse();
-  SP<ast_node_t>
-  parse_statement();
 
-  diagnostic_stack_t diagnostics;
+  UP<ast_node_t>
+  parse_statement();
 
   private:
   lexer_t                  &lexer;
@@ -55,93 +57,85 @@ class parser_t {
   bool
   peek_any(std::vector<token_type_t>, token_type_t *next = nullptr);
 
-  specialized_path_t
-  parse_specialized_path();
-  template_path_t
-  parse_template_path();
+  UP<path_node_t>
+  parse_path();
 
-  type_decl_t
+  UP<type_node_t>
   parse_type();
 
-  SP<ast_node_t>
-  parse_struct();
-  SP<ast_node_t>
-  parse_binding();
-  SP<ast_node_t>
-  parse_contract();
-  SP<ast_node_t>
-  parse_runtime_binding();
-  SP<ast_node_t>
-  parse_identifier();
+  UP<ast_node_t>
+  parse_declaration();
 
-  function_parameter_t
-  parse_function_parameter();
-  SP<ast_node_t>
-  parse_function();
-  SP<ast_node_t>
-  parse_type_alias();
-  SP<ast_node_t>
+  UP<ast_node_t>
+  parse_function_definition();
+
+  UP<block_node_t>
   parse_block();
-  SP<ast_node_t>
-  parse_return();
-  SP<ast_node_t>
-  parse_primary(bool allow_struct_literal = true);
-  SP<ast_node_t>
-  parse_expression(int min_binding_power = 0, bool allow_struct_literal = true);
-  SP<ast_node_t>
-  parse_slice();
-  SP<ast_node_t>
-  parse_array_initializer();
-  attribute_decl_t
-  parse_attributes();
 
-  tuple_decl_t
-  parse_tuple_type();
-  SP<ast_node_t>
-  parse_tuple_expression();
+  UP<ast_node_t>
+  parse_primary();
 
-  union_decl_t
-  parse_union_type();
-
-  SP<ast_node_t>
-  parse_enum();
-
-  SP<ast_node_t>
-  parse_if();
-  SP<ast_node_t>
-  parse_while();
-  SP<ast_node_t>
-  parse_for();
-  SP<ast_node_t>
-  parse_defer();
-
-  SP<ast_node_t>
-  parse_import_binding();
-
-  specialized_path_t
+  UP<import_node_t>
   parse_import();
 
-  bool
-  is_simple_path();
-  bool
-  is_templated_path();
-  bool
-  is_specialized_path();
+  std::vector<UP<parameter_node_t>>
+  parse_parameter_list();
 
-  std::vector<SP<ast_node_t>>
-  parse_function_arguments();
-  struct_expr_t
-  parse_struct_intialization();
+  UP<enum_definition_node_t>
+  parse_enum_definition();
 
-  void
-       parse_generic_specifier(template_segment_t &segment);
-  bool is_controlflow(SP<ast_node_t>);
+  UP<ast_node_t>
+  parse_expression(int min_binding_power = 0);
+
+  UP<ast_node_t> parse_destructuring_declaration(declaration_node_t::mutability);
+
+  UP<ast_node_t>
+  parse_tuple();
+
+  UP<ast_node_t>
+  parse_struct_definition();
+
+  UP<ast_node_t>
+  parse_struct_initializer();
+
+  // Controlflow
+  UP<ast_node_t>
+  parse_if();
+
+  UP<ast_node_t>
+  parse_while();
+
+  UP<ast_node_t>
+  parse_do_while();
+
+  UP<ast_node_t>
+  parse_for();
 
   binop_type_t
   binop_type(const token_t &);
 
   translation_unit_t unit;
+
+  friend class location_tracker_t;
 };
 
-SP<ast_node_t>
-expand(const std::string &v);
+struct location_tracker_t {
+  parser_t         &parser;
+  source_location_t location;
+
+  location_tracker_t(parser_t &p)
+    : parser(p)
+    , location(p.lexer.peek().location.start, {}) {}
+
+  template<typename T>
+  UP<T>
+  finalize(UP<T> node) {
+    if (node) {
+      // token.location usually refers to the last consumed token
+      auto end     = parser.token.location;
+      location.end = end.end;
+      node->template set<node_location_t>(node_location_t{ parser.source, location });
+    }
+    return node;
+  }
+};
